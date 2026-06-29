@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::env;
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -693,10 +694,36 @@ impl LaunchHooks for DefaultLaunchHooks {
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
-            let child = Command::new(executable)
+            let mut child_command = Command::new(executable);
+            child_command
                 .args(&command[1..])
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            if settings.enhancements_enabled {
+                let preload_path = crate::service_tier_preload::ensure_service_tier_preload()
+                    .context("failed to prepare service tier preload")?;
+                let node_options =
+                    crate::service_tier_preload::node_options_with_service_tier_preload(
+                        env::var("NODE_OPTIONS").ok().as_deref(),
+                        &preload_path.to_string_lossy(),
+                    );
+                child_command.env("NODE_OPTIONS", node_options.clone());
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.service_tier_preload_enabled",
+                    serde_json::json!({
+                        "preload_path": preload_path.to_string_lossy(),
+                        "node_options": node_options,
+                    }),
+                );
+            } else {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.service_tier_preload_disabled",
+                    serde_json::json!({
+                        "enhancements_enabled": settings.enhancements_enabled,
+                    }),
+                );
+            }
+            let child = child_command
                 .spawn()
                 .context("failed to launch macOS Codex app")?;
             *self.child.lock().await = Some(child);
