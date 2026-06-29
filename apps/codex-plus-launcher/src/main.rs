@@ -138,15 +138,17 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
-        .launch_codex(&app_dir, options.debug_port, &settings)
+        .launch_codex(
+            &app_dir,
+            options.debug_port,
+            &settings,
+            &settings.codex_extra_args,
+        )
         .await;
     if settings.enhancements_enabled {
         hooks.start_helper(options.helper_port).await?;
     }
     let process_ids = codex_plus_core::watcher::find_codex_processes();
-    #[cfg(not(windows))]
-    let activated = false;
-    #[cfg(windows)]
     let mut activated = false;
     #[cfg(windows)]
     {
@@ -318,8 +320,11 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
         debug_port: u16,
         settings: &codex_plus_core::settings::BackendSettings,
+        extra_args: &[String],
     ) -> anyhow::Result<codex_plus_core::launcher::CodexLaunch> {
-        self.core.launch_codex(app_dir, debug_port, settings).await
+        self.core
+            .launch_codex(app_dir, debug_port, settings, extra_args)
+            .await
     }
 
     async fn bridge_context(
@@ -802,7 +807,7 @@ mod tests {
         let source = include_str!("main.rs");
 
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
-        assert!(source.contains("LAUNCHER_GUARD_PORT"));
+        assert!(source.contains("launcher_guard_port"));
         assert!(source.contains("launcher.already_running"));
     }
 
