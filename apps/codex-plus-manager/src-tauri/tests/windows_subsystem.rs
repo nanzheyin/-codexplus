@@ -231,7 +231,7 @@ fn relay_context_management_is_global_not_supplier_scoped() {
 
     assert!(app_tsx.contains("作为全局配置独立管理"));
     assert!(app_tsx.contains("label: t(\"工具与插件\")"));
-    assert!(app_tsx.contains("title=\"Codex 工具与插件\""));
+    assert!(app_tsx.contains("title={t(\"Codex 工具与插件\")}"));
     assert!(!app_tsx.contains("label: \"上下文配置\""));
     assert!(!app_tsx.contains("title=\"上下文配置\""));
     assert!(!app_tsx.contains("<strong>Codex 上下文</strong>"));
