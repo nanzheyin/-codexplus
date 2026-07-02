@@ -191,9 +191,14 @@ fn injection_script_defers_backend_mapped_toggles_until_settings_load() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("const codexPlusBackendMappedSettings = new Set"));
-    assert!(script.contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded"));
+    assert!(
+        script
+            .contains("codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded")
+    );
     assert!(script.contains("button.dataset.pending = String(waitsForBackend)"));
-    assert!(script.contains("button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""));
+    assert!(script.contains(
+        "button.disabled = waitsForBackend || button.dataset.relayUnneeded === \"true\""
+    ));
     assert!(script.contains("toggle.disabled || toggle.dataset.pending === \"true\""));
 }
 
@@ -216,6 +221,15 @@ fn injection_script_skips_plugin_patch_work_in_relay_mode() {
     assert!(script.contains("!codexPlusBackendSettingsLoaded"));
     assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
     assert!(script.contains("clearPluginPatchArtifacts()"));
+}
+
+#[test]
+fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("settings.pluginAutoExpand = false"));
+    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
+    assert!(script.contains("if (!codexPlusSettings().pluginAutoExpand) return"));
 }
 
 #[test]
@@ -907,6 +921,19 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
+}
+
+#[test]
+fn manager_ui_disables_plugin_auto_expand_in_compatible_mode() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+
+    assert!(source.contains(
+        "checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode}"
+    ));
 }
 
 #[test]
