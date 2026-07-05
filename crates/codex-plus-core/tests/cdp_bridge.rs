@@ -576,6 +576,8 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("installAppServerModelRequestPatch"));
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
+    assert!(script.contains("loadOptionalCodexAppModule"));
+    assert!(script.contains("model_app_server_request_patch_skipped"));
     assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("scheduleCodexModelWhitelistRefresh"));
@@ -591,6 +593,7 @@ fn injection_script_unlocks_custom_model_catalog() {
 #[test]
 fn injection_script_exposes_fast_service_tier_control() {
     let script = assets::injection_script(57321);
+    let normalized_script = script.replace("\r\n", "\n");
 
     assert!(script.contains("default-service-tier"));
     assert!(script.contains("setting-storage-"));
@@ -603,7 +606,16 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("\"gpt-5.5\""));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
+    assert!(script.contains("codexServiceTierLastSupportedModelKey"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
+    assert!(
+        script
+            .contains("codexPlusBackendStatus.status === \"ok\" && codexPlusBackendSettingsLoaded")
+    );
+    assert!(
+        !normalized_script
+            .contains("void loadBackendSettingsForStartup();\n  void loadCodexServiceTierState();")
+    );
     assert!(script.contains("fastBlocked"));
     assert!(script.contains("data-tier=\"unsupported\""));
     assert!(script.contains("nextParams.service_tier = override.serviceTier"));
@@ -642,11 +654,16 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+    assert!(script.contains("codexServiceTierLooksLikeModelButton"));
+    assert!(script.contains("codexServiceTierComposerFromTextInput"));
+    assert!(script.contains("codexServiceTierModelButtonPlacement"));
     assert!(script.contains("codexServiceTierFindComposerEl"));
     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
     assert!(script.contains("codexServiceTierBestComposerFooter"));
     assert!(script.contains("codexServiceTierComposerCandidates"));
     assert!(script.contains("codexServiceTierComposerScore"));
+    assert!(script.contains("[contenteditable='true']"));
+    assert!(script.contains("[role='textbox']"));
     assert!(script.contains("data-codex-service-tier-badge"));
     assert!(script.contains("codexServiceTierBadgeWired"));
     assert!(script.contains("setAttribute(\"role\", \"button\")"));
@@ -715,6 +732,19 @@ fn injection_script_applies_fast_service_tier_contract() {
 
     assert_eq!(cases["turnWithoutModel"]["serviceTier"], "priority");
     assert_eq!(cases["turnWithoutModelDiagnosticModel"], "gpt-5.4");
+
+    assert_eq!(
+        cases["catalogSupportedListFallback"]["serviceTier"],
+        "priority"
+    );
+    assert_eq!(
+        cases["catalogSupportedListFallbackDiagnosticModel"],
+        "gpt-5.5"
+    );
+
+    assert_eq!(cases["unknownModelAllowed"]["serviceTier"], "priority");
+    assert_eq!(cases["unknownModelAllowedFastBlocked"], false);
+    assert_eq!(cases["unknownModelAllowedDiagnosticModel"], "");
 
     assert_eq!(
         cases["customInheritUnsupported"]["serviceTier"],
@@ -807,6 +837,25 @@ const turnWithoutModel = api.applyServiceTierOverride("turn/start", {{
 }}, "conversation-should-not-be-model");
 const turnWithoutModelDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
 
+api.setModelCatalog({{ status: "ok", model: "", default_model: "", models: ["gpt-5.5"] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const catalogSupportedListFallback = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  service_tier: null,
+}}, "");
+const catalogSupportedListFallbackDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
+
+api.clearLastSupportedModel();
+api.setModelCatalog({{ status: "loading", model: "", default_model: "", models: [] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const unknownModelAllowed = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  service_tier: null,
+}}, "");
+const unknownModelAllowedDiagnostic = api.diagnostics().at(-1)?.detail || {{}};
+const unknownModelAllowedDiagnosticModel = unknownModelAllowedDiagnostic.model;
+const unknownModelAllowedFastBlocked = unknownModelAllowedDiagnostic.fastBlocked;
+
 api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1"] }});
 api.setThreadState({{ mode: "custom", defaultMode: "inherit", entries: {{}}, draft: {{ mode: "inherit", at: Date.now() }} }});
 api.setServiceTierState({{ serviceTier: "priority" }});
@@ -828,6 +877,11 @@ process.stdout.write(JSON.stringify({{
   unsupportedModel,
   turnWithoutModel,
   turnWithoutModelDiagnosticModel,
+  catalogSupportedListFallback,
+  catalogSupportedListFallbackDiagnosticModel,
+  unknownModelAllowed,
+  unknownModelAllowedDiagnosticModel,
+  unknownModelAllowedFastBlocked,
   customInheritUnsupported,
   startConversation,
 }}));
@@ -915,6 +969,7 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     assert!(script.contains("branchMenuInNewWorktreeMode"));
     assert!(script.contains("branchMenuTriggerIsBranchControl"));
     assert!(script.contains("actual-upstream-refs-v16"));
+    assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js"));
     assert!(script.contains("create and checkout new branch"));
     assert!(script.contains("if (/^start in"));
     assert!(script.contains("if (!branchMenuInNewWorktreeMode(trigger))"));
