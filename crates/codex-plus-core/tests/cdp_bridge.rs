@@ -195,7 +195,9 @@ fn stepwise_refreshes_suggestions_for_virtualized_assistant_bubbles() {
     assert!(script.contains("candidates.push(...assistantBubbleCandidates())"));
     assert!(script.contains("function latestMessageByDocumentOrder("));
     assert!(script.contains("function clearPromptsForNewAssistant("));
-    assert!(script.contains("if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"));
+    assert!(script.contains(
+        "if (state.prompts.length || state.currentHash) clearPromptsForNewAssistant(hash);"
+    ));
     assert!(script.contains("function setScanStatus("));
     assert!(script.contains("setScanStatus(\"not-ready\""));
     assert!(script.contains("setScanStatus(\"no-assistant-message\""));

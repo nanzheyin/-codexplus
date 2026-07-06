@@ -220,6 +220,9 @@ export const EN_PLAIN: Record<string, string> = {
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "启用目标功能": "Enable goals feature",
+  "启用目标续跑保护": "Enable goal resume guard",
+  "检测到目标上下文时，Codex++ 会在中转请求中追加续跑保护提示，减少压缩后重做旧任务。":
+    "When goal context is detected, Codex++ appends a resume guard prompt to relay requests to reduce redoing old tasks after compaction.",
   "图片": "Image",
   "图片覆盖层": "Image overlay",
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",

@@ -291,6 +291,8 @@ pub struct BackendSettings {
     pub codex_app_image_overlay_opacity: u8,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
+    #[serde(rename = "codexAppGoalResumeGuard", default)]
+    pub codex_app_goal_resume_guard: bool,
     #[serde(rename = "launchMode", default)]
     pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
@@ -359,6 +361,7 @@ impl Default for BackendSettings {
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
             codex_goals_enabled: false,
+            codex_app_goal_resume_guard: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
@@ -870,6 +873,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
+    merge_bool_setting(target, source, "codexAppGoalResumeGuard");
     if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
         if matches!(value, "patch" | "relay") {
             target.insert("launchMode".to_string(), Value::String(value.to_string()));
@@ -1187,6 +1191,7 @@ mod tests {
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_goals_enabled);
+        assert!(!settings.codex_app_goal_resume_guard);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
         assert_eq!(
@@ -1737,6 +1742,7 @@ experimental_bearer_token = "sk-existing""#
             "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
             "codexGoalsEnabled": true,
+            "codexAppGoalResumeGuard": true,
             "relayBaseUrl": "https://relay.example.test/v1",
             "relayApiKey": "sk-relay",
             "codexExtraArgs": ["--force_high_performance_gpu", "", "  ", " --enable-gpu "],
@@ -1753,6 +1759,7 @@ experimental_bearer_token = "sk-existing""#
         assert!(!updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_goals_enabled);
+        assert!(updated.codex_app_goal_resume_guard);
         assert_eq!(updated.relay_base_url, "https://relay.example.test/v1");
         assert_eq!(updated.relay_api_key, "sk-relay");
         assert_eq!(

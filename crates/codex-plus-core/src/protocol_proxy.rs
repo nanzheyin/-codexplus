@@ -18,6 +18,18 @@ const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
+const GOAL_RESUME_GUARD_MARKER: &str = "Codex++ Goal Resume Guard";
+const GOAL_RESUME_GUARD_INSTRUCTION: &str = concat!(
+    "Codex++ Goal Resume Guard:\n",
+    "When continuing an active Codex goal after compaction or resume, do not replay older manual ",
+    "steer messages as a fresh task. Treat the newest active goal checkpoint as authoritative. ",
+    "If the workspace contains .codexpp-goal-state.md or GOAL_STATE.md, read it before acting ",
+    "and follow its objective, completed, current_next_step, blockers, do_not_redo, and ",
+    "last_completed_turn_id fields. For long-running goals, update the checkpoint file after ",
+    "each meaningful small batch or completed stage before continuing, so a later resume has ",
+    "the latest progress. If no checkpoint file exists, continue from the newest goal context ",
+    "and avoid redoing completed work unless the user explicitly asks."
+);
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "frequency_penalty",
     "logit_bias",
@@ -497,7 +509,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let request_json: Value = serde_json::from_str(body)?;
+    let mut request_json: Value = serde_json::from_str(body)?;
+    if settings.codex_app_goal_resume_guard {
+        request_json = apply_goal_resume_guard_to_request(request_json);
+    }
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -787,6 +802,88 @@ fn conversation_id_from_responses_request(body: &Value) -> Option<String> {
         }
     }
     None
+}
+
+fn apply_goal_resume_guard_to_request(mut request_json: Value) -> Value {
+    if !request_has_goal_context(&request_json)
+        || value_contains_text(&request_json, GOAL_RESUME_GUARD_MARKER)
+    {
+        return request_json;
+    }
+
+    let Some(object) = request_json.as_object_mut() else {
+        return request_json;
+    };
+    append_goal_resume_guard_instruction(object);
+    request_json
+}
+
+fn append_goal_resume_guard_instruction(object: &mut serde_json::Map<String, Value>) {
+    match object.get_mut("instructions") {
+        Some(Value::String(text)) => {
+            if !text.trim().is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(GOAL_RESUME_GUARD_INSTRUCTION);
+        }
+        Some(Value::Array(parts)) => {
+            parts.push(json!({
+                "type": "input_text",
+                "text": GOAL_RESUME_GUARD_INSTRUCTION
+            }));
+        }
+        Some(other) => {
+            let existing = instruction_text(other);
+            let next = if existing.trim().is_empty() {
+                GOAL_RESUME_GUARD_INSTRUCTION.to_string()
+            } else {
+                format!("{existing}\n\n{GOAL_RESUME_GUARD_INSTRUCTION}")
+            };
+            object.insert("instructions".to_string(), Value::String(next));
+        }
+        None => {
+            object.insert(
+                "instructions".to_string(),
+                Value::String(GOAL_RESUME_GUARD_INSTRUCTION.to_string()),
+            );
+        }
+    }
+}
+
+fn request_has_goal_context(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let source = object.get("source").and_then(Value::as_str).unwrap_or("");
+            let kind = object.get("type").and_then(Value::as_str).unwrap_or("");
+            if source.eq_ignore_ascii_case("goal")
+                || kind.eq_ignore_ascii_case("thread_goal")
+                || kind.eq_ignore_ascii_case("goal")
+            {
+                return true;
+            }
+            object.values().any(request_has_goal_context)
+        }
+        Value::Array(items) => items.iter().any(request_has_goal_context),
+        Value::String(text) => text_mentions_goal_context(text),
+        _ => false,
+    }
+}
+
+fn text_mentions_goal_context(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    (lower.contains("codex_internal_context") && lower.contains("source") && lower.contains("goal"))
+        || lower.contains("thread_goal_updated")
+}
+
+fn value_contains_text(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Array(items) => items.iter().any(|item| value_contains_text(item, needle)),
+        Value::Object(object) => object
+            .values()
+            .any(|item| value_contains_text(item, needle)),
+        _ => false,
+    }
 }
 
 fn effective_user_agent(configured_user_agent: &str, original_user_agent: Option<&str>) -> String {
@@ -3952,4 +4049,72 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goal_resume_guard_appends_to_goal_context_request() {
+        let guarded = apply_goal_resume_guard_to_request(json!({
+            "model": "gpt-5.5",
+            "instructions": "Base instructions.",
+            "input": [{
+                "type": "codex_internal_context",
+                "source": "goal",
+                "text": "Continue the active goal."
+            }]
+        }));
+
+        let instructions = guarded["instructions"].as_str().unwrap();
+        assert!(instructions.contains("Base instructions."));
+        assert!(instructions.contains(GOAL_RESUME_GUARD_MARKER));
+        assert!(instructions.contains(".codexpp-goal-state.md"));
+        assert!(instructions.contains("update the checkpoint file"));
+
+        let chat = responses_to_chat_completions(guarded).unwrap();
+        assert!(
+            chat["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains(GOAL_RESUME_GUARD_MARKER)
+        );
+    }
+
+    #[test]
+    fn goal_resume_guard_leaves_regular_request_unchanged() {
+        let original = json!({
+            "model": "gpt-5.5",
+            "input": "hello"
+        });
+        let guarded = apply_goal_resume_guard_to_request(original.clone());
+
+        assert_eq!(guarded, original);
+    }
+
+    #[test]
+    fn goal_resume_guard_does_not_duplicate_existing_marker() {
+        let guarded = apply_goal_resume_guard_to_request(json!({
+            "model": "gpt-5.5",
+            "instructions": GOAL_RESUME_GUARD_INSTRUCTION,
+            "input": [{
+                "type": "codex_internal_context",
+                "source": "goal",
+                "text": "Continue the active goal."
+            }]
+        }));
+
+        assert_eq!(
+            guarded["instructions"].as_str().unwrap(),
+            GOAL_RESUME_GUARD_INSTRUCTION
+        );
+    }
+
+    #[test]
+    fn goal_resume_guard_instruction_mentions_incremental_checkpoint_updates() {
+        assert!(GOAL_RESUME_GUARD_INSTRUCTION.contains("long-running goals"));
+        assert!(GOAL_RESUME_GUARD_INSTRUCTION.contains("each meaningful small batch"));
+        assert!(GOAL_RESUME_GUARD_INSTRUCTION.contains("latest progress"));
+    }
 }
