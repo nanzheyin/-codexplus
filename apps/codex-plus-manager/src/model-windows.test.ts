@@ -31,6 +31,7 @@ const _profileTypeCheck: RelayProfile = {
   autoCompactLimit: "",
   modelList: "",
   modelWindows: "",
+  stripImages: false,
   userAgent: "",
 };
 

@@ -87,6 +87,11 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub model_windows: String,
+    /// 路径 A：profile 级开关 — 开启后从 Responses 转 Chat Completions 时
+    /// 静默丢弃 input_image block（替换为空 content 字符串），用于兼容
+    /// DeepSeek/GLM/Kimi 等纯文本模型。默认 false（保留多模态行为）。
+    #[serde(rename = "stripImages", default)]
+    pub strip_images: bool,
     #[serde(
         rename = "userAgent",
         default,
@@ -148,6 +153,7 @@ impl Default for RelayProfile {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            strip_images: false,
             user_agent: String::new(),
         }
     }
@@ -416,6 +422,7 @@ impl BackendSettings {
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
                 model_windows: String::new(),
+                strip_images: false,
                 user_agent: String::new(),
             };
         }
@@ -461,6 +468,7 @@ impl BackendSettings {
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
             model_windows: String::new(),
+            strip_images: false,
             user_agent: String::new(),
         }
     }
@@ -2149,5 +2157,24 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn relay_profile_default_strip_images_is_false() {
+        // 路径 A 默认值：strip_images 默认 false，保持多模态行为不变
+        let profile = RelayProfile::default();
+        assert!(!profile.strip_images);
+    }
+
+    #[test]
+    fn relay_profile_roundtrips_strip_images_field() {
+        // 验证 stripImages 字段能正确反序列化（前端用 stripImages 命名）
+        let json = r#"{"id":"r1","name":"纯文本中转","stripImages":true}"#;
+        let profile: RelayProfile = serde_json::from_str(json).unwrap();
+        assert!(profile.strip_images);
+
+        // 验证能正确序列化回 stripImages
+        let serialized = serde_json::to_string(&profile).unwrap();
+        assert!(serialized.contains("\"stripImages\":true"));
     }
 }

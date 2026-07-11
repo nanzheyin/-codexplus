@@ -2,11 +2,12 @@ use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
+    is_responses_proxy_path, model_supports_image, models_url, open_chat_completions_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings, responses_error_from_upstream,
-    responses_to_chat_completions, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    responses_to_chat_completions, responses_to_chat_completions_with_image_support,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout,
 };
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -739,6 +740,155 @@ fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
         converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
         "{\"content\":\"# Test\",\"path\":\"docs/test.md\"}"
     );
+}
+
+#[test]
+fn responses_request_preserves_input_image_for_multimodal_model() {
+    // 路径 A：当 supports_image = true（默认多模态模型）时，input_image 应正常转成 image_url
+    let converted = responses_to_chat_completions_with_image_support(
+        json!({
+            "model": "gpt-5.5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "看下这张图" },
+                        { "type": "input_image", "image_url": "https://example.com/cat.png" }
+                    ]
+                }
+            ]
+        }),
+        true,
+    )
+    .unwrap();
+
+    // 验证：content 应为数组（包含 image_url）
+    let content = &converted["messages"][0]["content"];
+    assert!(
+        content.is_array(),
+        "supports_image=true 时 content 应为数组以保留图片，实际为: {content}"
+    );
+    let parts = content.as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0]["type"], "text");
+    assert_eq!(parts[0]["text"], "看下这张图");
+    assert_eq!(parts[1]["type"], "image_url");
+    assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
+}
+
+#[test]
+fn responses_request_strips_input_image_for_text_only_model() {
+    // 路径 A：MVP 核心场景 — 当 supports_image = false（纯文本模型）时，
+    // input_image 应被静默移除，content 自动坍缩为纯文本字符串。
+    // 这是修复 issue #1194 的关键测试。
+    let converted = responses_to_chat_completions_with_image_support(
+        json!({
+            "model": "deepseek-v4-pro",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "看下这张图" },
+                        { "type": "input_image", "image_url": "https://example.com/cat.png" }
+                    ]
+                }
+            ]
+        }),
+        false,
+    )
+    .unwrap();
+
+    // 验证：content 应坍缩为纯文本字符串，不含 image_url
+    let content = &converted["messages"][0]["content"];
+    assert!(
+        content.is_string(),
+        "supports_image=false 时 content 应坍缩为字符串，实际为: {content}"
+    );
+    assert_eq!(content.as_str().unwrap(), "看下这张图");
+
+    // 验证：消息中不包含 image_url 任何痕迹
+    let serialized = serde_json::to_string(&converted).unwrap();
+    assert!(
+        !serialized.contains("image_url"),
+        "纯文本模式转换结果不应包含 image_url 字段"
+    );
+}
+
+#[test]
+fn responses_request_strips_input_image_alone_leaves_placeholder_text() {
+    // 边界：用户只发了图片，没发文字，strip 后 content 应为空字符串而不是被丢弃
+    let converted = responses_to_chat_completions_with_image_support(
+        json!({
+            "model": "deepseek-v4-pro",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_image", "image_url": "https://example.com/cat.png" }
+                    ]
+                }
+            ]
+        }),
+        false,
+    )
+    .unwrap();
+
+    // content 应是空字符串（不报错、不丢消息）
+    let content = &converted["messages"][0]["content"];
+    assert!(
+        content.is_string(),
+        "纯图片被 strip 后 content 应为字符串，实际为: {content}"
+    );
+    assert_eq!(content.as_str().unwrap(), "");
+}
+
+#[test]
+fn responses_request_preserves_input_image_with_object_url() {
+    // 多模态路径上 image_url 也可能是对象形式（{url, detail}），需保证两种格式都通过
+    let converted = responses_to_chat_completions_with_image_support(
+        json!({
+            "model": "gpt-5.5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_image",
+                            "image_url": { "url": "data:image/png;base64,abc", "detail": "high" }
+                        }
+                    ]
+                }
+            ]
+        }),
+        true,
+    )
+    .unwrap();
+
+    let parts = converted["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0]["type"], "image_url");
+    assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,abc");
+    assert_eq!(parts[0]["image_url"]["detail"], "high");
+}
+
+#[test]
+fn model_supports_image_returns_true_when_strip_images_disabled() {
+    let mut profile = RelayProfile::default();
+    profile.strip_images = false;
+    assert!(model_supports_image(&profile, "deepseek-v4-pro"));
+    assert!(model_supports_image(&profile, "gpt-5.5"));
+}
+
+#[test]
+fn model_supports_image_returns_false_when_strip_images_enabled() {
+    let mut profile = RelayProfile::default();
+    profile.strip_images = true;
+    assert!(!model_supports_image(&profile, "deepseek-v4-pro"));
+    assert!(!model_supports_image(&profile, "gpt-5.5"));
 }
 
 #[test]

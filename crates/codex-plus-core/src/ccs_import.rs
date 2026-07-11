@@ -99,6 +99,7 @@ pub fn relay_profile_from_ccs(
         model_insert_mode: Default::default(),
         model_list: String::new(),
         model_windows: String::new(),
+        strip_images: false,
         user_agent: String::new(),
     }
 }

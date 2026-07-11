@@ -131,6 +131,20 @@ pub fn local_responses_proxy_base_url(port: u16) -> String {
 }
 
 pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_image_support(body, true)
+}
+
+/// 路径 A 入口：根据目标模型是否支持图片决定 input_image 转换行为。
+///
+/// - `supports_image = true`（默认）：input_image → Chat image_url，多模态模型正常返回
+/// - `supports_image = false`：input_image 静默丢弃，content 坍缩为纯文本字符串
+///
+/// 该函数被 [`responses_to_chat_completions`]（默认多模态兼容）和
+/// [`upstream_request_parts`]（按 relay 配置判断）共用。
+pub fn responses_to_chat_completions_with_image_support(
+    body: Value,
+    supports_image: bool,
+) -> anyhow::Result<Value> {
     let mut result = json!({});
 
     if let Some(model) = body.get("model") {
@@ -146,7 +160,7 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     }
 
     if let Some(input) = body.get("input") {
-        append_responses_input(input, &mut messages);
+        append_responses_input(input, &mut messages, supports_image);
     }
     normalize_chat_messages(&mut messages);
     let messages = collapse_system_messages_to_head(messages);
@@ -734,6 +748,11 @@ fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    let model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let supports_image = model_supports_image(relay, model);
     match relay.protocol {
         RelayProtocol::Responses => Ok((
             responses_url(&relay.base_url),
@@ -742,7 +761,7 @@ fn upstream_request_parts(
         )),
         RelayProtocol::ChatCompletions => Ok((
             chat_completions_url(&relay.base_url),
-            responses_to_chat_completions(request_json)?,
+            responses_to_chat_completions_with_image_support(request_json, supports_image)?,
             UpstreamWireApi::ChatCompletions,
         )),
     }
@@ -775,6 +794,17 @@ fn validate_upstream(relay: &crate::settings::RelayProfile) -> anyhow::Result<()
         anyhow::bail!("上游 Key 不能为空");
     }
     Ok(())
+}
+
+/// 路径 A：根据 relay 配置判断目标模型是否支持图片输入。
+///
+/// MVP 规则：profile 级开关 `strip_images` 控制 strip 行为。
+/// - `strip_images = true`  → 模型不支持图片（`supports_image = false`）
+/// - `strip_images = false` → 模型支持图片（默认，`supports_image = true`）
+///
+/// 注意：本函数是路径 A 的策略入口，进阶可在 per-model map 上叠加判断。
+pub fn model_supports_image(relay: &crate::settings::RelayProfile, _model: &str) -> bool {
+    !relay.strip_images
 }
 
 fn conversation_id_from_responses_request(body: &Value) -> Option<String> {
@@ -1781,7 +1811,7 @@ fn truncate_error_preview(input: &str) -> String {
     input.chars().take(ERROR_BODY_PREVIEW_LIMIT).collect()
 }
 
-fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
+fn append_responses_input(input: &Value, messages: &mut Vec<Value>, supports_image: bool) {
     match input {
         Value::String(text) => messages.push(json!({ "role": "user", "content": text })),
         Value::Array(items) => {
@@ -1795,6 +1825,7 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                     &mut pending_tool_calls,
                     &mut pending_reasoning,
                     &mut seen_tool_call_ids,
+                    supports_image,
                 );
             }
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
@@ -1810,6 +1841,7 @@ fn append_responses_input(input: &Value, messages: &mut Vec<Value>) {
                 &mut pending_tool_calls,
                 &mut pending_reasoning,
                 &mut seen_tool_call_ids,
+                supports_image,
             );
             flush_tool_calls(messages, &mut pending_tool_calls, &mut pending_reasoning);
             flush_reasoning(messages, &mut pending_reasoning);
@@ -1824,6 +1856,7 @@ fn append_responses_item(
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Vec<String>,
     seen_tool_call_ids: &mut BTreeSet<String>,
+    supports_image: bool,
 ) {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") => {
@@ -1977,7 +2010,8 @@ fn append_responses_item(
                     "role": role,
                     "content": responses_content_to_chat_content(
                         role,
-                        item.get("content").unwrap_or(&Value::Null)
+                        item.get("content").unwrap_or(&Value::Null),
+                        supports_image,
                         )
                 });
                 if role == "assistant" {
@@ -2158,7 +2192,7 @@ fn responses_reasoning_text(item: &Value) -> Option<String> {
     extract_reasoning_summary_text(item).or_else(|| extract_reasoning_field_text(item))
 }
 
-fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
+fn responses_content_to_chat_content(_role: &str, content: &Value, supports_image: bool) -> Value {
     if content.is_null() || content.is_string() {
         return content.clone();
     }
@@ -2186,6 +2220,12 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                 }
             }
             "input_image" => {
+                // 路径 A：纯文本模型 strip 图片。
+                // 当 supports_image = false，跳过该分支使 content 坍缩为字符串。
+                // 若 supports_image = true，按原逻辑转成 image_url。
+                if !supports_image {
+                    continue;
+                }
                 if let Some(image_url) = part.get("image_url") {
                     let image_url = if image_url.is_object() {
                         image_url.clone()

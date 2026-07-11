@@ -208,6 +208,9 @@ export type RelayProfile = {
   autoCompactLimit: string;
   modelList: string;
   modelWindows: string;
+  // 路径 A：开启后从 Responses 转 Chat Completions 时静默丢弃 input_image，
+  // 适用于 DeepSeek/GLM/Kimi 等纯文本模型。默认 false（保留多模态行为）。
+  stripImages: boolean;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -718,6 +721,7 @@ const defaultSettings: BackendSettings = {
       autoCompactLimit: "",
       modelList: "",
       modelWindows: "",
+      stripImages: false,
       userAgent: "",
     },
   ],
@@ -4297,6 +4301,23 @@ function RelayProfileEditor({
             />
           </Field>
         ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-strip-images" label={t("图片处理")}>
+            <label className="switch-row">
+              <input
+                checked={profile.stripImages}
+                onChange={(event) => updateDraft({ stripImages: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("强制移除图片（适用于纯文本模型）")}</strong>
+                <p className="field-hint">
+                  {t("开启后，从 Responses 转 Chat Completions 时静默丢弃 input_image 块，content 自动坍缩为纯文本。可解决 DeepSeek/GLM/Kimi 等纯文本模型遇到用户上传图片或模型自截图时报 unknown variant `image_url` 的问题。")}
+                </p>
+              </span>
+            </label>
+          </Field>
+        ) : null}
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
@@ -5970,6 +5991,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             autoCompactLimit: "",
             modelList: "",
             modelWindows: "",
+            stripImages: false,
             userAgent: "",
           },
         ];
@@ -6065,6 +6087,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
+    stripImages: profile.stripImages ?? false,
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -6701,6 +6724,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     autoCompactLimit: "",
     modelList: "",
     modelWindows: "",
+    stripImages: false,
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -6731,6 +6755,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       autoCompactLimit: "",
       modelList: "",
       modelWindows: "",
+      stripImages: false,
       userAgent: "",
       aggregate: {
         strategy: "failover",
