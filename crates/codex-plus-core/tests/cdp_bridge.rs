@@ -350,7 +350,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -362,7 +362,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -374,7 +374,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -401,6 +401,10 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("patchGuardedBuiltinPluginAvailability"));
+    assert!(script.contains("plugin_builtin_availability_repaired"));
+    assert!(script.contains("new Set([\"browser\", \"chrome\", \"computer-use\"])"));
+    assert!(script.contains("installation: \"AVAILABLE\""));
     assert!(script.contains("cloned.marketplaceName = marketplaceName"));
     assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));

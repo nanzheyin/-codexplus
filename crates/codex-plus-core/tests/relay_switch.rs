@@ -258,7 +258,16 @@ fn switch_preserves_codex_app_state_and_remote_plugin_marketplace() {
                 .join(".agents")
                 .join("plugins")
                 .join("marketplace.json"),
-            "{}",
+            serde_json::json!({
+                "name": "openai-bundled",
+                "plugins": [
+                    {"name": "browser"},
+                    {"name": "chrome"},
+                    {"name": "computer-use"},
+                    {"name": "latex"}
+                ]
+            })
+            .to_string(),
         )
         .unwrap();
         for plugin in ["browser", "chrome", "computer-use", "latex"] {

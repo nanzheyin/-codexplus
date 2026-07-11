@@ -3921,7 +3921,16 @@ mod tests {
                     .join(".agents")
                     .join("plugins")
                     .join("marketplace.json"),
-                "{}",
+                json!({
+                    "name": "openai-bundled",
+                    "plugins": [
+                        {"name": "browser"},
+                        {"name": "chrome"},
+                        {"name": "computer-use"},
+                        {"name": "latex"}
+                    ]
+                })
+                .to_string(),
             )
             .unwrap();
             for plugin in ["browser", "chrome", "computer-use", "latex"] {
