@@ -53,6 +53,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Watcher 状态": "Watcher status",
   "Watcher 用于保持 Codex++ 接管状态": "The watcher keeps Codex++ in control",
   "Watcher 自动接管": "Watcher auto-takeover",
+  "仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。":
+    "V2 pets only; pet files are never modified. Maps the V2 Computer Use cursor-look animation to the real mouse cursor. V1 pets safely remain unchanged, while dragging, native hover, and active Computer Use take priority.",
   "Zed 远程打开": "Zed remote open",
   "Zed 远程项目": "Zed remote projects",
   "Zed 项目记录": "Zed project history",
@@ -274,7 +276,6 @@ export const EN_PLAIN: Record<string, string> = {
   "工具与插件": "Tools & plugins",
   "已切回官方登录；Codex增强已设为兼容增强。": "Switched back to official login; Codex enhancements set to compatible.",
   "已切换到纯 API；Codex增强已设为完整增强。": "Switched to pure API; Codex enhancements set to full.",
-  "已切换到聚合供应商；真实对话会按所选策略轮转成员。": "Switched to aggregate provider; real conversations rotate members per the chosen strategy.",
   "已刷新 Codex 应用、入口和 Watcher 状态。": "Refreshed Codex app, entrypoint and watcher status.",
   "已受理": "Accepted",
   "已安装": "Installed",
@@ -282,10 +283,6 @@ export const EN_PLAIN: Record<string, string> = {
   "已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。":
     "Opened aggregate provider details; first add or complete the Base URL / Key of at least 1 regular API provider, then select it as a member.",
   "已找到": "Found",
-  "已按此供应商使用官方登录，并混入 API Key；Codex增强已设为兼容增强。":
-    "Using official login for this provider with the API Key mixed in; Codex enhancements set to compatible.",
-  "已按此供应商切回官方登录；Codex增强已设为兼容增强。": "Switched back to official login for this provider; Codex enhancements set to compatible.",
-  "已按此供应商切换到纯 API；Codex增强已设为完整增强。": "Switched to pure API for this provider; Codex enhancements set to full.",
   "已检测": "Detected",
   "已注册": "Registered",
   "已缓存未注册": "Cached, not registered",
@@ -383,6 +380,7 @@ export const EN_PLAIN: Record<string, string> = {
   "日志已刷新": "Logs refreshed",
   "日志已复制。": "Logs copied.",
   "时间": "Time",
+  "桌宠跟随真实鼠标": "Real-mouse pet look",
   "释放并注册内置缓存": "Extract and register embedded cache",
   "显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。":
     "Show the service-tier toggle button; Fast only supports gpt-5.4 / gpt-5.5, other models are sent as Standard.",
@@ -644,11 +642,31 @@ export const EN_PLAIN: Record<string, string> = {
   "，留空表示使用 Codex 默认长度。": "; leave empty to use Codex's default length.",
   "；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。":
     "; these entries are saved independently of providers and written to config.toml after switching to any provider.",
+  "中转站环境配置检测": "Relay environment check",
+  "进程环境": "Process environment",
+  "系统环境": "System environment",
+  "Clash Verge Rev TUN 模式": "Clash Verge Rev TUN mode",
+  "未发现 Clash Verge Rev 配置，按未开启处理。": "No Clash Verge Rev configuration was found; TUN is treated as disabled.",
+  "等待检测。": "Waiting for check.",
+  "系统代理环境变量": "System proxy environment variables",
+  "未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。":
+    "No HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY, or FTP_PROXY variable was detected.",
+  "Codex .env 文件": "Codex .env file",
+  "三项检测全部通过": "All three checks passed",
+  "检测到需要处理的环境问题": "Environment issues need attention",
+  "正在读取本机环境": "Reading the local environment",
+  "重新检测": "Check again",
+  "重新检测延迟": "Check latency again",
+  "此供应商没有单一目标 URL": "This provider has no single target URL",
+  "不可用": "Unavailable",
+  "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
+  "{0}（{1}）": "{0} ({1})",
+  "{0} ms": "{0} ms",
   "{0} · {1} 个成员": "{0} · {1} member(s)",
   "{0} 个": "{0}",
   "{0} 个 Codex++ 可识别项目，默认策略：{1}": "{0} project(s) recognized by Codex++, default strategy: {1}",
@@ -669,6 +687,13 @@ export const EN_TEMPLATE: Record<string, string> = {
     "Delete the {0} selected session(s)? This deletes the local database records and rollout files, and creates a backup for each session.\n\n{1}{2}",
   "发现 {0} 个 Codex 供应商": "Found {0} Codex provider(s)",
   "发现新版本 {0}": "New version {0} available",
+  "检测到 TUN 模式已开启，请在 Clash Verge Rev 中关闭。配置：{0}":
+    "TUN mode is enabled. Disable it in Clash Verge Rev. Configuration: {0}",
+  "TUN 模式已关闭。配置：{0}": "TUN mode is disabled. Configuration: {0}",
+  "检测到代理环境变量：{0}。请清理后重新启动 Codex++。":
+    "Proxy environment variables detected: {0}. Remove them and restart Codex++.",
+  "检测到可能干扰供应商配置的 .env 文件：{0}": "A .env file that may interfere with provider configuration was found: {0}",
+  "未发现 .env 文件：{0}": "No .env file found: {0}",
   "官方登录已就绪：{0}，会混入当前 API Key。": "Official login ready: {0}, the current API Key will be mixed in.",
   "官方账号已登录：{0}。": "Official account logged in: {0}.",
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
