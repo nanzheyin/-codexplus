@@ -1222,11 +1222,10 @@ fn strip_reasoning_in_place_noop_when_reasoning_absent() {
 }
 
 #[test]
-fn upstream_responses_passthrough_strips_both_images_and_reasoning_for_text_only_no_reasoning_model()
+fn upstream_responses_passthrough_preserves_images_and_reasoning_as_is_for_text_only_model()
  {
-    // 集成：Responses 透传分支同时剥 input_image 和 reasoning。
-    // 构造一个 kimi-k2.6 请求（不支持 reasoning），带图片 + reasoning，
-    // 透传后两者都应被移除。
+    // 集成：Responses 透传分支不剥离任何内容，原样转发。
+    // 即使模型不支持图片/推理，Response 格式也不干预。
     let mut profile = RelayProfile::default();
     profile.protocol = codex_plus_core::settings::RelayProtocol::Responses;
     profile.strip_images = false;
@@ -1259,11 +1258,11 @@ fn upstream_responses_passthrough_strips_both_images_and_reasoning_for_text_only
     );
 
     let serialized = serde_json::to_string(&upstream_body).unwrap();
-    assert!(!serialized.contains("input_image"), "input_image 应被剥离");
-    assert!(!serialized.contains("a.png"), "图片 URL 应被剥离");
-    assert!(!serialized.contains("reasoning"), "reasoning 应被剥离");
-    // input_text 保留
-    assert!(serialized.contains("看这张图"));
+    // Response 格式纯透传，图片和 reasoning 都保留原样
+    assert!(serialized.contains("input_image"), "Response 格式应保留 input_image");
+    assert!(serialized.contains("a.png"), "Response 格式应保留图片 URL");
+    assert!(serialized.contains("reasoning"), "Response 格式应保留 reasoning");
+    assert!(serialized.contains("看这张图"), "input_text 应保留");
 }
 
 #[test]

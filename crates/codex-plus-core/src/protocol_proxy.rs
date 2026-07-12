@@ -753,31 +753,18 @@ fn response_header_timeout(is_stream: bool) -> Duration {
 }
 
 /// 构建上游请求。supports_image 由调用方预计算（经 VL 预处理后决定）。
-/// Chat 分支用 supports_image 决定是否 strip 图片；Responses 分支纯透传但
-/// 按 supports_image + model_reasoning_support 决定是否剥图片/reasoning。
+/// Chat 分支用 supports_image 决定是否 strip 图片；Responses 分支纯透传。
 fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
     supports_image: bool,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
-    let model = request_json
-        .get("model")
-        .and_then(Value::as_str)
-        .map(|s| s.to_string())
-        .unwrap_or_default();
     match relay.protocol {
-        RelayProtocol::Responses => {
-            let mut body = request_json;
-            let supports_reasoning =
-                model_supports_reasoning(relay, &model);
-            strip_input_images_in_place(&mut body, supports_image);
-            strip_reasoning_in_place(&mut body, supports_reasoning);
-            Ok((
-                responses_url(&relay.base_url),
-                body,
-                UpstreamWireApi::Responses,
-            ))
-        }
+        RelayProtocol::Responses => Ok((
+            responses_url(&relay.base_url),
+            request_json,
+            UpstreamWireApi::Responses,
+        )),
         RelayProtocol::ChatCompletions => Ok((
             chat_completions_url(&relay.base_url),
             responses_to_chat_completions_with_image_support(request_json, supports_image)?,
