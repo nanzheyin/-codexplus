@@ -4,9 +4,10 @@
 
 ---
 
-@xuweibing233 这个报错现在有完整的解决方案了。我提了一个 PR 专门解决纯文本模型遇到图片和 reasoning 的问题：
+@xuweibing233 这个报错现在有完整的解决方案了。我和 @kanchengw 分别提了两个 PR 专门解决纯文本模型遇到图片和 reasoning 的问题：
 
-👉 **https://github.com/BigPizzaV3/CodexPlusPlus/pull/1405**（@kanchengw 的同系列 PR）
+👉 我的 PR：**https://github.com/BigPizzaV3/CodexPlusPlus/pull/1468**
+👉 @kanchengw 的 PR：**https://github.com/BigPizzaV3/CodexPlusPlus/pull/1405**
 
 ### 现在可以做什么
 
@@ -35,7 +36,7 @@
 
 我们分别独立实现了同系列的功能，殊途同归：
 - #1405 功能更全面（含 LRU 缓存、历史多轮分析、并发控制），适合深度使用
-- 我的实现更精简（单次处理、无新依赖），适合快速合并
+- #1468 更精简（单次处理、无新依赖），适合快速合并
 
 两个实现的核心思路一致——在 proxy 层拦截图片 → 调 VL 描述 → 替换为文字。最终合并哪个由维护者决定，但对用户来说效果是一样的：纯文本模型不再报错，图片可被视觉模型描述替代。
 

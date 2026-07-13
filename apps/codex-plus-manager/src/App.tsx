@@ -4574,7 +4574,7 @@ function RelayProfileEditor({
                       checked={row.textOnly}
                       disabled={!row.model.trim()}
                       onChange={(event) => updateModelWindowRow(index, { textOnly: event.currentTarget.checked })}
-                      title={t("勾选以标记为纯文本模型（DeepSeek/GLM/Kimi 等），Codex++ 会在转发前静默丢弃 input_image")}
+                      title={t("仅 Chat Completions 协议生效：标记为纯文本模型（DeepSeek-V4/GLM-5.2 等），Codex++ 在转发前静默丢弃 input_image；务必同时在 Codex++ 设置中配置支持图片输入的模型以解析 input_image")}
                       type="checkbox"
                     />
                   </label>
