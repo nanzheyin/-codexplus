@@ -498,7 +498,7 @@ protocol_proxy 82 个用例覆盖：
 
 | 文件 | + | − | 说明 |
 |------|---|---|------|
-| `crates/codex-plus-core/src/protocol_proxy.rs` | +411 | −7 | **核心**：per-model 判断 + strip + VL 预处理 + 主链路串联 |
+| `crates/codex-plus-core/src/protocol_proxy.rs` | +411 | −7 | **核心**：per-model 判断 + strip + VL 预处理（含 30s 超时 + 10 张上限）+ 主链路串联 |
 | `crates/codex-plus-core/src/settings.rs` | +256 | — | VisionRelayConfig + modelImageSupport + modelReasoningSupport |
 | `crates/codex-plus-core/tests/protocol_proxy.rs` | +1194 | −? | 82 个测试用例 |
 | `apps/codex-plus-manager/src/App.tsx` | +195 | −? | VL 设置区 + per-model 表格 + 注释文字 |
@@ -526,10 +526,113 @@ protocol_proxy 82 个用例覆盖：
 以下不在本次 PR 范围内，建议后续迭代：
 
 1. **VL base64 图片体积控制**：大图 data URL 会导致 VL 请求体过大，需加体积阈值（参考 image-router 的 4MB 限制）
-2. **VL 超时配置**：当前使用 reqwest 默认超时（无限制），生产环境应可配
-3. **VL 流式请求**：当前 VL 调用只支持非流式
-4. **per-model 批量标记 UI**：模型多时一个个勾选效率低，可加"全选当前列表"等批量操作
-5. **VL "测试连接"按钮**：类似 Stepwise 的 `test_stepwise_settings`，让用户填完能即时验证 VL 配置是否正确
+2. **VL 流式请求**：当前 VL 调用只支持非流式
+3. **per-model 批量标记 UI**：模型多时一个个勾选效率低，可加"全选当前列表"等批量操作
+4. **VL "测试连接"按钮**：类似 Stepwise 的 `test_stepwise_settings`，让用户填完能即时验证 VL 配置是否正确
+5. **历史图片缓存**：当前每次请求重新调 VL，没有 LRU 缓存机制。同一会话里同一张图会重复调 VL，浪费费用
+
+---
+
+## 十、与 PR #1405 的对比
+
+@kanchengw 在 #1405 独立实现了一个同系列的 VLM 视觉分析功能。以下逐维度对比，供维护者参考合并决策。
+
+### 10.1 整体对比
+
+| 维度 | PR #1405 (kanchengw) | 本 PR |
+|------|---------------------|-------|
+| **核心理念** | 纯文本模型走 VLM 分析，图片 → 文字描述（主路径），strip 为辅 | 先判断 per-model 能力，再决定 VL 识图还是 strip；Response 纯透传 |
+| **VLM 配置位置** | 在 RelayProfile 上（per-relay 粒度） | 在 BackendSettings 上（全局唯一 VL 配置） |
+| **VL 处理深度** | 两阶段：同步处理当前轮+黄金窗口（10轮），后台补深层 | 单次：只处理当前请求中 context_window 范围内的图（最多 10 张） |
+| **图片缓存** | LRU 缓存（500 条，24h TTL），历史图片可缓存命中 | 无缓存，每次重新调 VL |
+| **Response 协议处理** | 同时处理 Chat + Responses 两个路径 | Chat 走 proxy（strip/VL），Responses 纯透传 |
+| **新增文件** | `vision.rs`（1822 行，独立模块） | 全部在 `protocol_proxy.rs` 内（~400 行） |
+| **新增依赖** | wiremock, sha2, assert-json-diff | 无新增依赖 |
+| **测试** | 43 个（含 8 个 wiremock 集成测试） | 82 个（含 VL + strip + per-model 能力全覆盖） |
+| **Reasoning 处理** | ❌ 未涉及 | ✅ modelReasoningSupport + strip_reasoning_in_place |
+
+### 10.2 VL 入口位置差异
+
+**PR #1405**：在 `upstream_request_parts` 内直接插 VL，覆盖 Chat 和 Responses 两个分支。VL 逻辑是同步阻塞在协议转换之后的。
+
+**本 PR**：在 `open_responses_proxy_request_with_settings_and_user_agent` 外层异步预处理 VL，然后 `upstream_request_parts` 接收预计算的 `supports_image`。Response 分支不触发 VL。两层解耦。
+
+### 10.3 VLM 配置粒度差异
+
+**PR #1405**：per-relay 配置，每个供应商可以有独立的 VLM Key/Model/BaseURL。更灵活但配置成本高。
+
+**本 PR**：全局唯一 VL 配置，所有 relay 共用。更简单但不够灵活。另外支持 VL 自身协议切换（ChatCompletions / Responses）、max_tokens 可配、独立 context_window。
+
+### 10.4 历史图片处理差异（最重要的设计差异）
+
+**PR #1405**：两阶段分析 + LRU 缓存。Phase 1 同步处理当前轮+黄金窗口 10 轮；Phase 2 后台分析深层图片写入缓存。历史图片可以在后续轮次被缓存命中，不需要重复调 VL。**可以恢复被图片污染的旧会话。**
+
+**本 PR**：单轮处理，每次请求独立。context_window 范围内的图都调 VL（每次重新调，不缓存）；context_window 外的直接 strip。旧会话的图片如果在窗口内会重新 VL 描述；如果在窗口外则 strip。**不能恢复被污染的旧会话，但新会话不构成问题。**
+
+### 10.5 失败策略差异
+
+**PR #1405**：fail-closed（全部失败保留原图）。VL 不可达时图片保留，不丢失信息，但纯文本模型可能再次报错。
+
+**本 PR**：fail-open + 降级（VL 失败走 strip）。VL 不可达时丢弃图片保证请求能发出，宁可丢图也不阻断用户。
+
+### 10.6 工程质量对比
+
+**PR #1405 优势**：
+- HTTP 超时（连接 5s + 请求 30s + 总 120s）＜ 本 PR 也有单次 30s 超时，×10 张最多 300s
+- 并发控制（per-request 3 + 全局 5 信号量）＞ 本 PR 串行调 VL
+- 图片数量上限（历史 10 张 + 深度 50 轮）≈ 本 PR 也有 10 张上限 + context_window 限制
+- wiremock 集成测试覆盖真实 HTTP 场景 ＞ 本 PR 用 mock server 模拟
+
+**本 PR 优势**：
+- 双维度能力判断（图片 + 推理）＞ #1405 只有图片
+- Per-model map fallback 逻辑更完善（非空未命中默认 true，不误伤视觉模型）
+- VL max_tokens 可配、协议可切换 ＞ #1405 固定 ChatCompletions
+- 无新依赖 ＞ #1405 新增 3 个依赖
+- 82 个测试覆盖更全面
+
+### 10.7 功能覆盖矩阵
+
+| 功能 | PR #1405 | 本 PR |
+|------|----------|-------|
+| 纯文本模型 strip 图片 | ✅ | ✅ |
+| VL 识图替换 | ✅（当前轮 + 历史多轮） | ✅（当前请求，最多 10 张） |
+| VL 图片缓存 | ✅ LRU | ❌ |
+| 历史会话恢复 | ✅（两阶段 + 缓存） | ❌ |
+| per-model 图片能力 map | ✅ modelVlm JSON | ✅ modelImageSupport JSON |
+| per-model 推理能力 map | ❌ | ✅ modelReasoningSupport JSON |
+| Reasoning strip | ❌ | ✅ strip_reasoning_in_place |
+| VL max_tokens 可配 | ❌ | ✅ |
+| VL 协议适配 | 固定 ChatCompletions | ChatCompletions + Responses |
+| HTTP 超时 | ✅ 5/30/120s | ✅ 单次 30s |
+| 并发控制 | ✅ 3+5 信号量 | ❌ 串行 |
+| 图片数量上限 | ✅ 10 张/50 轮 | ✅ 10 张 |
+| 失败策略 | fail-closed | 降级 strip |
+| Response 格式处理 | 两个分支 | Chat 走 proxy，Response 纯透传 |
+| 全局 strip 向后兼容 | ❌ | ✅ strip_images fallback |
+
+### 10.8 两个 PR 是否可以共存？
+
+可以。修改的文件有重叠但改动区域不同：
+
+| 文件 | PR #1405 | 本 PR | 冲突风险 |
+|------|----------|-------|---------|
+| `protocol_proxy.rs` | 在 `upstream_request_parts` 加 VLM hook | 新增 10+ 个函数 + 改签名 | ⚠️ 中等 |
+| `settings.rs` | 加 4 个 RelayProfile 字段 | 加 2 个 RelayProfile 字段 + VisionRelayConfig | ⚠️ 中等 |
+| `App.tsx` | Per-model VLM 列 | VL 设置区 + per-model 双列 | ⚠️ 需手动合并 |
+| `vision.rs` | 新文件 1822 行 | — | 无冲突 |
+
+### 10.9 维护者 Review 意见对照
+
+BigPizzaV3 在 #1405 提了 6 条阻塞意见。对照本 PR 的状态：
+
+| Review 条目 | 本 PR 状态 |
+|------------|-----------|
+| 1. Responses 模式不经过代理 | ✅ 已标注：前端注释 + VL tab 提示"仅 Chat 格式触发" |
+| 2. HTTP 超时 | ✅ 已加：单次 VL 调用 `.timeout(30s)`，10 张图最多 300s |
+| 3. 历史图片处理 | ⚠️ 部分：每次重调 VL 但不缓存，旧会话图片在 context_window 内会重新描述，窗口外 strip |
+| 4. 全部失败判断不可达 | ✅ 不适用：二元成功/失败，不存在部分失败场景 |
+| 5. UI 校验 | ✅ API Key 已用 `type="password"` |
+| 6. 并发/图片上限 | ✅ 图片上限 10 张；串行调 VL 无并发问题 |
 
 ---
 

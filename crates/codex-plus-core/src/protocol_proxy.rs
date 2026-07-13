@@ -9,6 +9,11 @@ use std::time::Duration;
 use anyhow::Context;
 use serde_json::{Value, json};
 
+/// 单次请求中 VL 处理的图片数量上限。超出部分直接 strip，不调 VL API。
+const VL_IMAGE_LIMIT: usize = 10;
+/// 单次 VL API 调用的超时时间。
+const VL_SINGLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
@@ -1042,6 +1047,7 @@ async fn describe_image_with_vl(
         .post(&endpoint)
         .bearer_auth(&vl_config.api_key)
         .json(&body)
+        .timeout(VL_SINGLE_TIMEOUT)
         .send()
         .await?;
     let status = response.status();
@@ -1090,7 +1096,8 @@ pub async fn analyze_images_with_vl(
     let window_indices = items_within_vl_window(input, vl_config.context_window);
     let user_text = collect_input_text(input);
 
-    // VL 处理窗口内的图
+    // VL 处理窗口内的图（最多 VL_IMAGE_LIMIT 张）
+    let mut vl_count = 0;
     for &idx in &window_indices {
         let Some(item) = input.get_mut(idx) else {
             continue;
@@ -1105,6 +1112,14 @@ pub async fn analyze_images_with_vl(
             let Some(img_url) = extract_image_url(part) else {
                 continue;
             };
+
+            vl_count += 1;
+            if vl_count > VL_IMAGE_LIMIT {
+                // 超出上限：标记为空对象，后续 retain 统一清理
+                *part = json!({});
+                continue;
+            }
+
             let description = describe_image_with_vl(&img_url, &user_text, vl_config, client).await?;
 
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1123,6 +1138,8 @@ pub async fn analyze_images_with_vl(
                 "text": format!("# 图片内容描述\n\n{description}")
             });
         }
+        // 清理超限标记的空对象
+        parts.retain(|p| !p.as_object().map_or(false, |o| o.is_empty()));
     }
 
     // 窗口外的图片 strip 掉
