@@ -660,6 +660,12 @@ export const EN_PLAIN: Record<string, string> = {
   "此供应商没有单一目标 URL": "This provider has no single target URL",
   "不可用": "Unavailable",
   "排查可能干扰中转站配置的本机环境": "Find local environment settings that may interfere with relay configuration",
+  "VL 模型自身的 API 协议，与主中转协议无关；仅 Chat Completions 格式的请求会触发 VL 处理":
+    "The VL model's own API protocol, independent of the main relay protocol. Only Chat Completions format requests trigger VL processing.",
+  "以下仅在选择 Chat Completions 协议时生效：勾选「只支持文本」可标记为纯文本模型（DeepSeek-V4/GLM-5.2等），Codex++ 会在转发前静默丢弃 input_image；务必同时在 Codex++ 设置中配置支持图片输入的模型，input_image 将由该模型解析。":
+    "Effective only when Chat Completions protocol is selected: check \"Text only\" to mark a model as text-only (e.g. DeepSeek-V4/GLM-5.2), and Codex++ will silently drop input_image before forwarding. Be sure to also configure a vision-capable model in Codex++ settings — input_image will be interpreted by that model.",
+  "上下文窗口特指调用视觉模型的窗口长度，窗口范围内的图片及文字整体发给视觉模型调用 VL；0 表示不限制。此设置只影响 VL 处理范围，不影响主对话的压缩阈值。":
+    "The context window here refers to the window length for the vision model call: images and text within the window are sent together to the vision model for VL processing. 0 means no limit. This setting only affects VL processing scope and does not affect the main conversation compression threshold.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -874,10 +880,4 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^启动系统浏览器失败：(.+)$/, "Failed to launch system browser: $1"],
   [/^诊断报告序列化失败：(.+)$/, "Failed to serialize diagnostics report: $1"],
   [/^响应：(.+)$/, "Response: $1"],
-  "VL 模型自身的 API 协议，与主中转协议无关；仅 Chat Completions 格式的请求会触发 VL 处理":
-    "The VL model's own API protocol, independent of the main relay protocol. Only Chat Completions format requests trigger VL processing.",
-  "以下仅在选择 Chat Completions 协议时生效：勾选「只支持文本」可标记为纯文本模型（DeepSeek-V4/GLM-5.2等），Codex++ 会在转发前静默丢弃 input_image；务必同时在 Codex++ 设置中配置支持图片输入的模型，input_image 将由该模型解析。":
-    "Effective only when Chat Completions protocol is selected: check \"Text only\" to mark a model as text-only (e.g. DeepSeek-V4/GLM-5.2), and Codex++ will silently drop input_image before forwarding. Be sure to also configure a vision-capable model in Codex++ settings — input_image will be interpreted by that model.",
-  "上下文窗口特指调用视觉模型的窗口长度，窗口范围内的图片及文字整体发给视觉模型调用 VL；0 表示不限制。此设置只影响 VL 处理范围，不影响主对话的压缩阈值。":
-    "The context window here refers to the window length for the vision model call: images and text within the window are sent together to the vision model for VL processing. 0 means no limit. This setting only affects VL processing scope and does not affect the main conversation compression threshold.",
 ];
