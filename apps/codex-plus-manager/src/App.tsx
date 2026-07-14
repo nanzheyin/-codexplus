@@ -3435,20 +3435,24 @@ function SettingsScreen({
       <Panel>
         <CardHead title={t("基础设置")} detail={settings?.settings_path ?? ""} />
         <CardContent>
-          <div className="theme-row">
-            <div>
-              <strong>{t("界面主题")}</strong>
-              <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
+          <div className="basic-settings-list">
+            <div className="theme-row">
+              <div>
+                <strong>{t("界面主题")}</strong>
+                <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
+              </div>
+              <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
             </div>
-            <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+            <label className="theme-row settings-test-model-row">
+              <strong>{t("供应商测试模型")}</strong>
+              <Input
+                className="settings-test-model-input"
+                value={form.relayTestModel}
+                onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
+                placeholder={t("例如 gpt-5.4-mini")}
+              />
+            </label>
           </div>
-          <Field label={t("供应商测试模型")}>
-            <Input
-              value={form.relayTestModel}
-              onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-              placeholder={t("例如 gpt-5.4-mini")}
-            />
-          </Field>
           <div className="settings-block vision-relay-settings-block">
             <div className="section-title">{t("视觉模型中转（VL）")}</div>
             <p className="field-hint">

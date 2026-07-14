@@ -1825,6 +1825,21 @@ body {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.basic-settings-list {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.settings-test-model-row {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
+}
+
+.settings-test-model-input {
+  width: 320px;
+  max-width: 100%;
+}
+
 .feature-toggle {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
@@ -2966,6 +2981,15 @@ body {
   .feature-action-row button,
   .feature-action-status {
     width: fit-content;
+  }
+
+  .settings-test-model-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settings-test-model-input {
+    width: 100%;
   }
 }
 
