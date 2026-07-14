@@ -812,12 +812,14 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
                 .collect::<Vec<_>>(),
         }),
     );
-    let result = codex_plus_data::delete_local_from_paths(
+    let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let result = codex_plus_data::delete_local_from_paths_with_cleanup(
         candidate_paths.clone(),
         codex_plus_data::BackupStore::new(
             codex_plus_core::paths::default_app_state_dir().join("backups"),
         ),
         &session,
+        &codex_home,
     );
     log_manager_event(
         "manager.delete_local_session.finish",
@@ -1203,12 +1205,19 @@ pub async fn apply_session_index_cleanup(
     match result {
         Ok(Ok(cleanup)) => ok(
             &format!(
-                "已清理 {} 条失效任务索引；原索引已完整备份。",
-                cleanup.pruned_entries
+                "已清理 {} 条失效任务索引{}；原索引已完整备份。",
+                cleanup.pruned_entries,
+                if cleanup.app_state_pruned {
+                    "，并移除对应界面状态残留"
+                } else {
+                    ""
+                }
             ),
             json!({
                 "prunedEntries": cleanup.pruned_entries,
                 "backupDir": cleanup.backup_dir,
+                "appStatePruned": cleanup.app_state_pruned,
+                "appStateBackupDir": cleanup.app_state_backup_dir,
             }),
         ),
         Ok(Err(error)) => {

@@ -1,5 +1,5 @@
 use codex_plus_core::codex_app_state::{
-    capture_app_state_snapshot, prepare_projectless_main_window,
+    capture_app_state_snapshot, prepare_projectless_main_window, prune_app_state_thread_references,
     sync_app_state_after_provider_switch,
 };
 use serde_json::{Value, json};
@@ -241,6 +241,75 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
     assert_eq!(
         backup["computer-use-bundled-plugin-auto-install-disabled"],
         true
+    );
+}
+
+#[test]
+fn app_state_thread_prune_removes_selected_thread_references() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let stale_id = "019f6087-0212-71d1-95af-fd526ecc7c51".to_string();
+    let live_id = "019f60bc-b484-71c2-b1d4-67809d33e3d3";
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state_path,
+        json!({
+            "projectless-thread-ids": [&stale_id, live_id],
+            "thread-workspace-root-hints": {
+                format!("local:{stale_id}"): "C:/stale",
+                live_id: "D:/live"
+            },
+            "thread-projectless-output-directories": {
+                format!("{stale_id}"): "C:/stale/out"
+            },
+            "thread-writable-roots": {
+                format!("{stale_id}"): ["C:/stale"]
+            },
+            "electron-persisted-atom-state": {
+                format!("thread-client-id-v1:local%3A{stale_id}"): "client",
+                format!("thread-browser-tabs-v1:{stale_id}"): null,
+                "unread-thread-ids-by-host-v1": {
+                    "local": [&stale_id, live_id]
+                },
+                "sidebar-width": 296
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = prune_app_state_thread_references(home, &[format!("local%3A{stale_id}")]).unwrap();
+
+    assert!(result.changed);
+    assert!(result.backup_path.as_deref().unwrap().is_dir());
+    assert!(result.snapshot_path.as_deref().unwrap().is_file());
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!([live_id]));
+    assert!(
+        state["thread-workspace-root-hints"]
+            .get(&stale_id)
+            .is_none()
+    );
+    assert!(
+        state["thread-workspace-root-hints"]
+            .get(format!("local:{stale_id}"))
+            .is_none()
+    );
+    assert_eq!(state["thread-workspace-root-hints"][live_id], "D:/live");
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-client-id-v1:local%3A{stale_id}"))
+            .is_none()
+    );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-browser-tabs-v1:{stale_id}"))
+            .is_none()
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["unread-thread-ids-by-host-v1"]["local"],
+        json!([live_id])
     );
 }
 

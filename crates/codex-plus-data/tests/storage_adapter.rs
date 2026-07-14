@@ -1,7 +1,7 @@
 use codex_plus_core::models::{DeleteStatus, SessionRef};
 use codex_plus_data::{
     BackupStore, SQLiteStorageAdapter, delete_local_from_paths,
-    move_codex_thread_workspace_from_paths,
+    delete_local_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -449,6 +449,78 @@ fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
     assert_eq!(thread_count(&second_db, "t1"), 0);
     assert!(!first_rollout.exists());
     assert!(!second_rollout.exists());
+}
+
+#[test]
+fn delete_local_from_paths_with_cleanup_deletes_legacy_thread_and_sidebar_refs() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let current_db = sqlite_dir.join("codex-dev.db");
+    let current = Connection::open(&current_db).unwrap();
+    current
+        .execute(
+            "CREATE TABLE local_thread_catalog (
+                host_id TEXT,
+                thread_id TEXT PRIMARY KEY,
+                display_title TEXT
+            )",
+            [],
+        )
+        .unwrap();
+    drop(current);
+    let legacy_db = home.join("state_5.sqlite");
+    let rollout = home.join("sessions/rollout-2026-07-14T21-08-57-t1.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(&rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&legacy_db, &rollout);
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"t1\",\"thread_name\":\"移除开机 cmd 启动项\",\"updated_at\":\"2026-07-14T13:09:16Z\"}\n{\"id\":\"t2\",\"thread_name\":\"保留\",\"updated_at\":\"2026-07-14T13:10:00Z\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "projectless-thread-ids": ["t1", "t2"],
+            "thread-workspace-root-hints": {
+                "t1": "C:/stale",
+                "t2": "C:/live"
+            },
+            "electron-persisted-atom-state": {
+                "thread-client-id-v1:local%3At1": "client",
+                "sidebar-width": 296
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = delete_local_from_paths_with_cleanup(
+        vec![current_db.clone(), legacy_db.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("local%3At1", "移除开机 cmd 启动项"),
+        &home,
+    );
+
+    assert_eq!(result.status, DeleteStatus::LocalDeleted);
+    assert!(result.message.contains("列表入口"));
+    assert_eq!(thread_count(&legacy_db, "t1"), 0);
+    assert!(!rollout.exists());
+    let index = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(!index.contains("\"id\":\"t1\""));
+    assert!(index.contains("\"id\":\"t2\""));
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!(["t2"]));
+    assert!(state["thread-workspace-root-hints"].get("t1").is_none());
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get("thread-client-id-v1:local%3At1")
+            .is_none()
+    );
 }
 
 #[test]

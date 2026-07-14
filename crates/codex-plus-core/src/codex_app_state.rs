@@ -72,6 +72,14 @@ pub struct AppStateSyncResult {
     pub snapshot_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppStateThreadPruneResult {
+    pub changed: bool,
+    pub changed_keys: Vec<String>,
+    pub backup_path: Option<PathBuf>,
+    pub snapshot_path: Option<PathBuf>,
+}
+
 pub fn capture_app_state_snapshot(home: &Path) -> anyhow::Result<Option<PathBuf>> {
     let Some(state) = load_global_state(home)? else {
         return Ok(None);
@@ -144,6 +152,95 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     let snapshot_path = capture_app_state_snapshot(home)?;
 
     Ok(AppStateSyncResult {
+        changed: true,
+        changed_keys: changed_keys.into_iter().collect(),
+        backup_path: Some(backup_path),
+        snapshot_path,
+    })
+}
+
+pub fn prune_app_state_thread_references(
+    home: &Path,
+    thread_ids: &[String],
+) -> anyhow::Result<AppStateThreadPruneResult> {
+    let thread_ids = thread_id_match_set(thread_ids);
+    if thread_ids.is_empty() {
+        return Ok(AppStateThreadPruneResult {
+            changed: false,
+            changed_keys: Vec::new(),
+            backup_path: None,
+            snapshot_path: None,
+        });
+    }
+    let Some(mut state) = load_global_state(home)? else {
+        return Ok(AppStateThreadPruneResult {
+            changed: false,
+            changed_keys: Vec::new(),
+            backup_path: None,
+            snapshot_path: None,
+        });
+    };
+    let original = Value::Object(state.clone());
+    let mut changed_keys = BTreeSet::new();
+
+    for key in THREAD_STATE_MAP_KEYS {
+        if let Some(value) = state.get(*key).and_then(Value::as_object).cloned() {
+            let next = value
+                .into_iter()
+                .filter(|(thread_id, _)| !thread_ids.contains(thread_id.trim()))
+                .collect::<Map<_, _>>();
+            replace_if_changed(&mut state, key, Value::Object(next), &mut changed_keys);
+        }
+    }
+    for key in THREAD_ID_ARRAY_KEYS {
+        if let Some(value) = state.get(*key).cloned() {
+            let next = string_array(&value)
+                .into_iter()
+                .filter(|thread_id| !thread_ids.contains(thread_id.trim()))
+                .collect::<Vec<_>>();
+            replace_if_changed(
+                &mut state,
+                key,
+                json!(dedupe_strings(next)),
+                &mut changed_keys,
+            );
+        }
+    }
+    if let Some(atom) = state
+        .get("electron-persisted-atom-state")
+        .and_then(Value::as_object)
+        .cloned()
+    {
+        let next = prune_thread_atom_state(atom, &thread_ids);
+        replace_if_changed(
+            &mut state,
+            "electron-persisted-atom-state",
+            Value::Object(next),
+            &mut changed_keys,
+        );
+    }
+
+    if changed_keys.is_empty() {
+        return Ok(AppStateThreadPruneResult {
+            changed: false,
+            changed_keys: Vec::new(),
+            backup_path: None,
+            snapshot_path: None,
+        });
+    }
+
+    let backup_path = create_backup(home, &original)?;
+    let next = Value::Object(state);
+    let text = serde_json::to_string_pretty(&next)?;
+    let state_path = state_path(home);
+    crate::settings::atomic_write(&state_path, text.as_bytes())?;
+    if let Some(parent) = state_path.parent() {
+        let _ =
+            crate::settings::atomic_write(&parent.join(GLOBAL_STATE_BACKUP_FILE), text.as_bytes());
+    }
+    let snapshot_path = capture_app_state_snapshot(home)?;
+
+    Ok(AppStateThreadPruneResult {
         changed: true,
         changed_keys: changed_keys.into_iter().collect(),
         backup_path: Some(backup_path),
@@ -578,6 +675,74 @@ fn normalize_atom_state(atom: &mut Map<String, Value>) {
     if let Some(value) = atom.remove("service-tier-default") {
         atom.entry("default-service-tier".to_string())
             .or_insert(value);
+    }
+}
+
+fn thread_id_match_set(thread_ids: &[String]) -> HashSet<String> {
+    let mut result = HashSet::new();
+    for thread_id in thread_ids {
+        let trimmed = thread_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bare = trimmed
+            .strip_prefix("local:")
+            .or_else(|| trimmed.strip_prefix("local%3A"))
+            .or_else(|| trimmed.strip_prefix("local%3a"))
+            .unwrap_or(trimmed);
+        result.insert(bare.to_string());
+        result.insert(format!("local:{bare}"));
+        result.insert(format!("local%3A{bare}"));
+        result.insert(format!("local%3a{bare}"));
+    }
+    result
+}
+
+fn prune_thread_atom_state(
+    atom: Map<String, Value>,
+    thread_ids: &HashSet<String>,
+) -> Map<String, Value> {
+    atom.into_iter()
+        .filter_map(|(key, value)| {
+            if thread_atom_key_matches(&key, thread_ids) {
+                return None;
+            }
+            let value = if key == "unread-thread-ids-by-host-v1" {
+                prune_thread_ids_from_value(value, thread_ids)
+            } else {
+                value
+            };
+            Some((key, value))
+        })
+        .collect()
+}
+
+fn thread_atom_key_matches(key: &str, thread_ids: &HashSet<String>) -> bool {
+    ["thread-client-id-v1:", "thread-browser-tabs-v1:"]
+        .iter()
+        .filter_map(|prefix| key.strip_prefix(prefix))
+        .any(|thread_id| thread_ids.contains(thread_id.trim()))
+}
+
+fn prune_thread_ids_from_value(value: Value, thread_ids: &HashSet<String>) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .filter(|item| {
+                    item.as_str()
+                        .map(|thread_id| !thread_ids.contains(thread_id.trim()))
+                        .unwrap_or(true)
+                })
+                .map(|item| prune_thread_ids_from_value(item, thread_ids))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, prune_thread_ids_from_value(value, thread_ids)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 

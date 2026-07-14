@@ -4,7 +4,7 @@ use codex_plus_data::{
     run_provider_sync_with_target,
 };
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -889,6 +889,94 @@ fn session_index_cleanup_preserves_all_local_sources_and_unknown_records() {
         fs::read_to_string(backup.join("session_index.jsonl")).unwrap(),
         original_index
     );
+}
+
+#[test]
+fn session_index_cleanup_prunes_matching_app_state_thread_references() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir(&home).unwrap();
+    let stale_id = "019f6087-0212-71d1-95af-fd526ecc7c51";
+    let live_id = "019f60bc-b484-71c2-b1d4-67809d33e3d3";
+    let original_index = format!(
+        "{}\n{}\n",
+        session_index_line(stale_id, "打招呼"),
+        session_index_line(live_id, "保留任务"),
+    );
+    fs::write(home.join("session_index.jsonl"), &original_index).unwrap();
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "projectless-thread-ids": [stale_id, live_id],
+            "thread-workspace-root-hints": {
+                stale_id: "C:/stale/project",
+                live_id: "D:/work-ai/codex++"
+            },
+            "thread-projectless-output-directories": {
+                stale_id: "C:/stale/project/outputs"
+            },
+            "thread-writable-roots": {
+                stale_id: ["C:/stale/project"]
+            },
+            "electron-persisted-atom-state": {
+                format!("thread-client-id-v1:local%3A{stale_id}"): "client-new-thread",
+                format!("thread-browser-tabs-v1:{stale_id}"): null,
+                "unread-thread-ids-by-host-v1": {
+                    "local": [stale_id, live_id]
+                },
+                "sidebar-width": 300
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let rollout = home.join(format!(
+        "sessions/rollout-2026-07-14T21-06-55-{live_id}.jsonl"
+    ));
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(&rollout, "{\"type\":\"event_msg\"}\n").unwrap();
+
+    let preview = preview_session_index_cleanup(Some(&home)).unwrap();
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].id, stale_id);
+
+    let result = apply_session_index_cleanup(
+        Some(&home),
+        &preview.snapshot_sha256,
+        &[stale_id.to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(result.pruned_entries, 1);
+    assert!(result.app_state_pruned);
+    assert!(result.app_state_backup_dir.as_deref().unwrap().is_dir());
+    let next_index = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(!next_index.contains(stale_id));
+    assert!(next_index.contains(live_id));
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!([live_id]));
+    assert!(state["thread-workspace-root-hints"].get(stale_id).is_none());
+    assert_eq!(
+        state["thread-workspace-root-hints"][live_id],
+        "D:/work-ai/codex++"
+    );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-client-id-v1:local%3A{stale_id}"))
+            .is_none()
+    );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-browser-tabs-v1:{stale_id}"))
+            .is_none()
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["unread-thread-ids-by-host-v1"]["local"],
+        json!([live_id])
+    );
+    assert_eq!(state["electron-persisted-atom-state"]["sidebar-width"], 300);
 }
 
 #[test]

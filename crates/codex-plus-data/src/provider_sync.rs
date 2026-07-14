@@ -55,6 +55,16 @@ pub struct SessionIndexCleanupPreview {
 pub struct SessionIndexCleanupResult {
     pub pruned_entries: usize,
     pub backup_dir: Option<PathBuf>,
+    pub app_state_pruned: bool,
+    pub app_state_backup_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletedThreadReferencePruneResult {
+    pub pruned_session_index_entries: usize,
+    pub session_index_backup_dir: Option<PathBuf>,
+    pub app_state_pruned: bool,
+    pub app_state_backup_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -874,6 +884,8 @@ pub fn apply_session_index_cleanup(
             return Ok(SessionIndexCleanupResult {
                 pruned_entries: 0,
                 backup_dir: None,
+                app_state_pruned: false,
+                app_state_backup_dir: None,
             });
         }
         let backup_dir = create_session_index_cleanup_backup(&home, &plan, removed_entries)?;
@@ -898,13 +910,93 @@ pub fn apply_session_index_cleanup(
                 )
             },
         )?;
+        let selected_ids = selected_ids.into_iter().collect::<Vec<_>>();
+        let app_state_prune = codex_plus_core::codex_app_state::prune_app_state_thread_references(
+            &home,
+            &selected_ids,
+        )
+        .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
         let _ = prune_backups(&home);
         Ok(SessionIndexCleanupResult {
             pruned_entries: removed_entries,
             backup_dir: Some(backup_dir),
+            app_state_pruned: app_state_prune.changed,
+            app_state_backup_dir: app_state_prune.backup_path,
         })
     })();
     let _ = release_lock(&lock_dir);
+    result
+}
+
+pub fn prune_deleted_thread_references(
+    codex_home: &Path,
+    thread_ids: &[String],
+) -> anyhow::Result<DeletedThreadReferencePruneResult> {
+    let thread_ids = thread_id_match_set(thread_ids);
+    if thread_ids.is_empty() {
+        return Ok(DeletedThreadReferencePruneResult::default());
+    }
+    let (pruned_session_index_entries, session_index_backup_dir) =
+        prune_deleted_session_index_entries(codex_home, &thread_ids)?;
+    let selected_ids = thread_ids.iter().cloned().collect::<Vec<_>>();
+    let app_state_prune = codex_plus_core::codex_app_state::prune_app_state_thread_references(
+        codex_home,
+        &selected_ids,
+    )?;
+    Ok(DeletedThreadReferencePruneResult {
+        pruned_session_index_entries,
+        session_index_backup_dir,
+        app_state_pruned: app_state_prune.changed,
+        app_state_backup_dir: app_state_prune.backup_path,
+    })
+}
+
+fn prune_deleted_session_index_entries(
+    home: &Path,
+    thread_ids: &HashSet<String>,
+) -> anyhow::Result<(usize, Option<PathBuf>)> {
+    let path = home.join("session_index.jsonl");
+    if !path.exists() {
+        return Ok((0, None));
+    }
+    let original_bytes = fs::read(&path)?;
+    let original_text = String::from_utf8(original_bytes.clone())?;
+    let snapshot_sha256 = sha256_hex(&original_bytes);
+    let plan = SessionIndexPlan {
+        path,
+        snapshot_sha256,
+        original_bytes,
+        original_text,
+        candidates: Vec::new(),
+    };
+    let (next_text, removed_entries) = filtered_session_index_text(&plan, thread_ids);
+    if removed_entries == 0 {
+        return Ok((0, None));
+    }
+    let backup_dir = create_session_index_cleanup_backup(home, &plan, removed_entries)
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes())
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok((removed_entries, Some(backup_dir)))
+}
+
+fn thread_id_match_set(thread_ids: &[String]) -> HashSet<String> {
+    let mut result = HashSet::new();
+    for thread_id in thread_ids {
+        let trimmed = thread_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bare = trimmed
+            .strip_prefix("local:")
+            .or_else(|| trimmed.strip_prefix("local%3A"))
+            .or_else(|| trimmed.strip_prefix("local%3a"))
+            .unwrap_or(trimmed);
+        result.insert(bare.to_string());
+        result.insert(format!("local:{bare}"));
+        result.insert(format!("local%3A{bare}"));
+        result.insert(format!("local%3a{bare}"));
+    }
     result
 }
 

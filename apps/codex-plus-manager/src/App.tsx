@@ -528,6 +528,8 @@ type SessionIndexCleanupPreviewPayload = {
 type SessionIndexCleanupApplyPayload = {
   prunedEntries?: number;
   backupDir?: string | null;
+  appStatePruned?: boolean;
+  appStateBackupDir?: string | null;
 };
 
 type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";

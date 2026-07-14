@@ -434,8 +434,14 @@ impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
+        let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
         tokio::task::spawn_blocking(move || {
-            codex_plus_data::delete_local_from_paths(db_paths, backup_store, &session)
+            codex_plus_data::delete_local_from_paths_with_cleanup(
+                db_paths,
+                backup_store,
+                &session,
+                &codex_home,
+            )
         })
         .await
         .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))

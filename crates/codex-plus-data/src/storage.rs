@@ -36,6 +36,34 @@ pub fn delete_local_from_paths(
     result
 }
 
+pub fn delete_local_from_paths_with_cleanup(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    session: &SessionRef,
+    codex_home: &Path,
+) -> DeleteResult {
+    let mut result = delete_local_from_paths(db_paths, backup_store, session);
+    if !matches!(result.status, DeleteStatus::LocalDeleted) {
+        return result;
+    }
+    let thread_id = if result.session_id.trim().is_empty() {
+        normalize_codex_thread_id(&session.session_id)
+    } else {
+        normalize_codex_thread_id(&result.session_id)
+    };
+    match crate::provider_sync::prune_deleted_thread_references(codex_home, &[thread_id]) {
+        Ok(prune) => {
+            if prune.pruned_session_index_entries > 0 || prune.app_state_pruned {
+                result.message = format!("{}，并清理列表入口", result.message);
+            }
+        }
+        Err(error) => {
+            result.message = format!("{}；列表入口清理失败：{error}", result.message);
+        }
+    }
+    result
+}
+
 pub fn move_codex_thread_workspace_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
@@ -872,8 +900,11 @@ fn failed_with_undo(
 }
 
 fn normalize_codex_thread_id(session_id: &str) -> String {
+    let session_id = session_id.trim();
     session_id
         .strip_prefix("local:")
+        .or_else(|| session_id.strip_prefix("local%3A"))
+        .or_else(|| session_id.strip_prefix("local%3a"))
         .unwrap_or(session_id)
         .to_string()
 }
