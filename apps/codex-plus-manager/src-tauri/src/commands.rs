@@ -1646,7 +1646,7 @@ pub async fn check_update() -> CommandResult<Value> {
             }
         }
         Err(error) => failed(
-            &format!("检查更新失败：{error}"),
+            &format!("检查更新失败：{error:#}"),
             json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": Value::Null,

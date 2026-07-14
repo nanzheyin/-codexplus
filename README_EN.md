@@ -207,7 +207,7 @@ Settings that depend on renderer injection generally require saving and restarti
 
 Codex++ publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds separate Intel x64 and Apple Silicon arm64 DMGs.
 
-The manager's About page can check and start updates. When the silent launcher finds a new version, it opens the manager directly on the update prompt.
+The manager's About page can check and start updates. Update requests support the system proxy, retry with a direct connection when the proxy request fails, and always connect directly to local loopback addresses. When the silent launcher finds a new version, it opens the manager directly on the update prompt.
 
 ## Data Locations
 

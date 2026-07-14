@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -166,17 +167,59 @@ pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> 
     })
 }
 
+fn update_request(
+    client: &reqwest::Client,
+    url: &str,
+    accept: Option<&'static str>,
+) -> reqwest::RequestBuilder {
+    let request = client.get(url);
+    match accept {
+        Some(accept) => request.header(reqwest::header::ACCEPT, accept),
+        None => request,
+    }
+}
+
+async fn send_update_get_with_clients(
+    url: &str,
+    accept: Option<&'static str>,
+    primary: &reqwest::Client,
+    direct_fallback: Option<&reqwest::Client>,
+) -> anyhow::Result<reqwest::Response> {
+    match update_request(primary, url, accept).send().await {
+        Ok(response) => Ok(response),
+        Err(primary_error) => {
+            let Some(direct_fallback) = direct_fallback else {
+                return Err(primary_error).context("发送更新请求失败");
+            };
+            update_request(direct_fallback, url, accept)
+                .send()
+                .await
+                .with_context(|| format!("默认网络请求失败（{primary_error:#}），直连重试也失败"))
+        }
+    }
+}
+
+async fn send_update_get(
+    url: &str,
+    accept: Option<&'static str>,
+) -> anyhow::Result<reqwest::Response> {
+    let user_agent = format!("Codex++/{}", crate::version::VERSION);
+    let primary = crate::http_client::client_for_url(&user_agent, url)?;
+    if crate::http_client::is_local_url(url) {
+        return send_update_get_with_clients(url, accept, &primary, None).await;
+    }
+    let direct = crate::http_client::direct_client(&user_agent)?;
+    send_update_get_with_clients(url, accept, &primary, Some(&direct)).await
+}
+
 pub async fn fetch_latest_release(latest_json_url: &str) -> anyhow::Result<Release> {
-    let client =
-        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?;
-    let payload = client
-        .get(latest_json_url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
+    let payload = send_update_get(latest_json_url, Some("application/json"))
         .await?
-        .error_for_status()?
+        .error_for_status()
+        .context("更新清单返回错误状态")?
         .json::<Value>()
-        .await?;
+        .await
+        .context("解析更新清单失败")?;
     release_from_latest_json_payload(&payload)
 }
 
@@ -201,14 +244,13 @@ pub async fn perform_update(
         .asset_url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
-    let bytes =
-        crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))?
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+    let bytes = send_update_get(url, None)
+        .await?
+        .error_for_status()
+        .context("安装包下载返回错误状态")?
+        .bytes()
+        .await
+        .context("读取安装包下载内容失败")?;
     let installer_path = download_asset_to(release, &bytes, download_dir)?;
     launch_installer(&installer_path)?;
     Ok(UpdateInstall {
@@ -339,5 +381,66 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     {
         let _ = path;
         anyhow::bail!("当前平台不支持启动安装包")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_LATEST_JSON_URL, fetch_latest_release, send_update_get_with_clients};
+    use serde_json::Value;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn update_request_retries_direct_after_proxy_send_failure() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let broken_proxy = reqwest::Proxy::all("http://127.0.0.1:1").unwrap();
+        let primary = reqwest::Client::builder()
+            .proxy(broken_proxy)
+            .build()
+            .unwrap();
+        let direct = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = send_update_get_with_clients(
+            &format!("http://{address}/latest.json"),
+            Some("application/json"),
+            &primary,
+            Some(&direct),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.json::<Value>().await.unwrap(),
+            serde_json::json!({"ok": true})
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires access to the public GitHub Release"]
+    async fn live_update_manifest_is_reachable() {
+        let release = fetch_latest_release(DEFAULT_LATEST_JSON_URL)
+            .await
+            .expect("fetch public latest.json");
+
+        assert!(!release.version.trim().is_empty());
+        assert!(release.url.contains("/releases/tag/"));
+        assert!(release.asset_name.is_some());
+        assert!(release.asset_url.is_some());
     }
 }
