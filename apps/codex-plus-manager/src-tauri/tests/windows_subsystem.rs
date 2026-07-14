@@ -235,6 +235,7 @@ fn github_release_workflow_auto_publishes_each_main_push() {
     assert!(
         release_workflow.contains("node scripts/release/prepare-version.mjs \"$NEXT_VERSION\"")
     );
+    assert!(release_workflow.contains("git -c core.whitespace=cr-at-eol diff --check"));
     assert!(release_workflow.contains("git push origin HEAD:main"));
     assert!(release_workflow.contains("git tag -a \"$RELEASE_TAG\""));
     assert!(release_workflow.contains("VERSION=\"${RELEASE_TAG#v}\""));
