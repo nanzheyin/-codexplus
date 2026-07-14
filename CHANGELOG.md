@@ -1,5 +1,10 @@
 # 更新日志
 
+## Unreleased
+
+- 支持每次推送 `main` 后自动递增补丁版本、同步应用版本文件并创建正式 GitHub Release。
+- 自动发布复用 Windows 与 macOS 打包流程并更新 `latest.json`，同时避免 PR 构建工作流重复处理 `main`。
+
 ## 1.2.39 - 2026-07-14
 
 - 修复会话管理把 `goals_1.sqlite`、`memories_1.sqlite` 等辅助数据库误当成会话主库读取，导致提示 `Unsupported local storage schema` 的问题。

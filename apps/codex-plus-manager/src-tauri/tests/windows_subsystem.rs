@@ -216,6 +216,65 @@ fn github_release_workflow_creates_release_for_version_tags() {
 }
 
 #[test]
+fn github_release_workflow_auto_publishes_each_main_push() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let release_workflow =
+        std::fs::read_to_string(repo_root.join(".github/workflows/release-assets.yml"))
+            .expect("read release assets workflow");
+    let pr_workflow = std::fs::read_to_string(repo_root.join(".github/workflows/pr-build.yml"))
+        .expect("read PR build workflow");
+
+    assert!(release_workflow.contains("branches: [main]"));
+    assert!(release_workflow.contains("prepare-release:"));
+    assert!(release_workflow.contains("NEXT_PATCH=$((10#${PATCH} + 1))"));
+    assert!(
+        release_workflow.contains("node scripts/release/prepare-version.mjs \"$NEXT_VERSION\"")
+    );
+    assert!(release_workflow.contains("git push origin HEAD:main"));
+    assert!(release_workflow.contains("git tag -a \"$RELEASE_TAG\""));
+    assert!(release_workflow.contains("VERSION=\"${RELEASE_TAG#v}\""));
+    assert!(!pr_workflow.contains("branches: [main]"));
+}
+
+#[test]
+fn release_version_script_validates_every_version_source() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let current = env!("CARGO_PKG_VERSION");
+    let mut parts = current
+        .split('.')
+        .map(|part| part.parse::<u64>().expect("numeric workspace version"));
+    let major = parts.next().unwrap();
+    let minor = parts.next().unwrap();
+    let patch = parts.next().unwrap();
+    assert!(parts.next().is_none());
+    let next = format!("{major}.{minor}.{}", patch + 1);
+
+    let output = std::process::Command::new("node")
+        .arg("scripts/release/prepare-version.mjs")
+        .arg(next)
+        .arg("--check")
+        .current_dir(repo_root)
+        .output()
+        .expect("run release version validation script");
+
+    assert!(
+        output.status.success(),
+        "version validation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
