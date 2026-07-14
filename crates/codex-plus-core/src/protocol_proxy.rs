@@ -1133,7 +1133,10 @@ async fn describe_image_with_vl(
 
     let endpoint = match vl_config.protocol {
         crate::settings::RelayProtocol::ChatCompletions => {
-            format!("{}/chat/completions", vl_config.base_url.trim_end_matches('/'))
+            format!(
+                "{}/chat/completions",
+                vl_config.base_url.trim_end_matches('/')
+            )
         }
         crate::settings::RelayProtocol::Responses => {
             format!("{}/responses", vl_config.base_url.trim_end_matches('/'))
@@ -1217,7 +1220,8 @@ pub async fn analyze_images_with_vl(
                 continue;
             }
 
-            let description = describe_image_with_vl(&img_url, &user_text, vl_config, client).await?;
+            let description =
+                describe_image_with_vl(&img_url, &user_text, vl_config, client).await?;
 
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.vl_described",

@@ -1222,8 +1222,7 @@ fn strip_reasoning_in_place_noop_when_reasoning_absent() {
 }
 
 #[test]
-fn upstream_responses_passthrough_preserves_images_and_reasoning_as_is_for_text_only_model()
- {
+fn upstream_responses_passthrough_preserves_images_and_reasoning_as_is_for_text_only_model() {
     // 集成：Responses 透传分支不剥离任何内容，原样转发。
     // 即使模型不支持图片/推理，Response 格式也不干预。
     let mut profile = RelayProfile::default();
@@ -1259,9 +1258,15 @@ fn upstream_responses_passthrough_preserves_images_and_reasoning_as_is_for_text_
 
     let serialized = serde_json::to_string(&upstream_body).unwrap();
     // Response 格式纯透传，图片和 reasoning 都保留原样
-    assert!(serialized.contains("input_image"), "Response 格式应保留 input_image");
+    assert!(
+        serialized.contains("input_image"),
+        "Response 格式应保留 input_image"
+    );
     assert!(serialized.contains("a.png"), "Response 格式应保留图片 URL");
-    assert!(serialized.contains("reasoning"), "Response 格式应保留 reasoning");
+    assert!(
+        serialized.contains("reasoning"),
+        "Response 格式应保留 reasoning"
+    );
     assert!(serialized.contains("看这张图"), "input_text 应保留");
 }
 
