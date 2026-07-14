@@ -12,6 +12,8 @@ use codex_plus_core::settings::{
 };
 use serde_json::json;
 
+static MODEL_CATALOG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tokio::test]
 async fn model_catalog_fetches_models_from_codex_config_provider() {
     let temp = tempfile::tempdir().unwrap();
@@ -114,6 +116,7 @@ experimental_bearer_token = "ark-key"
 
 #[tokio::test]
 async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
+    let _env_lock = MODEL_CATALOG_ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("codex-home");
     std::fs::create_dir_all(&codex_home).unwrap();
@@ -166,6 +169,71 @@ async fn model_catalog_uses_active_relay_profile_model_list_for_display() {
         result["models"],
         json!(["qwen3-coder", "deepseek-coder", "claude-compatible"])
     );
+    assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
+}
+
+#[tokio::test]
+async fn model_catalog_prefers_live_codex_model_for_active_relay_profile() {
+    let _env_lock = MODEL_CATALOG_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    write_config(
+        &codex_home,
+        r#"
+model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "Custom"
+base_url = "https://example.test/v1"
+"#,
+    );
+    let settings_path = temp.path().join("settings.json");
+    let previous_codex_home = std::env::var_os("CODEX_HOME");
+    let previous_settings_path =
+        codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path.clone()));
+    unsafe {
+        std::env::set_var("CODEX_HOME", &codex_home);
+    }
+
+    let result = async {
+        SettingsStore::new(settings_path)
+            .save(&BackendSettings {
+                active_relay_id: "relay-a".to_string(),
+                relay_profiles: vec![RelayProfile {
+                    id: "relay-a".to_string(),
+                    name: "Relay A".to_string(),
+                    model: "gpt-4.1".to_string(),
+                    base_url: "https://example.test/v1".to_string(),
+                    protocol: RelayProtocol::Responses,
+                    relay_mode: RelayMode::MixedApi,
+                    model_list: "gpt-4.1".to_string(),
+                    config_contents: "model = \"gpt-4.1\"\n".to_string(),
+                    ..RelayProfile::default()
+                }],
+                ..BackendSettings::default()
+            })
+            .unwrap();
+
+        read_codex_model_catalog().await
+    }
+    .await;
+
+    match previous_codex_home {
+        Some(value) => unsafe {
+            std::env::set_var("CODEX_HOME", value);
+        },
+        None => unsafe {
+            std::env::remove_var("CODEX_HOME");
+        },
+    }
+    codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
+
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["model"], "gpt-5.5");
+    assert_eq!(result["default_model"], "gpt-5.5");
+    assert_eq!(result["models"], json!(["gpt-5.5", "gpt-4.1"]));
     assert_eq!(result["sources"][0]["type"], "relay_profile_model_list");
 }
 

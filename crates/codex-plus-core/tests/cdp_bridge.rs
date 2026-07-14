@@ -488,7 +488,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -500,7 +500,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -512,7 +512,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"12\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -539,6 +539,10 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
     assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
     assert!(script.contains("plugin_marketplace_local_merged"));
+    assert!(script.contains("patchGuardedBuiltinPluginAvailability"));
+    assert!(script.contains("plugin_builtin_availability_repaired"));
+    assert!(script.contains("new Set([\"browser\", \"chrome\", \"computer-use\"])"));
+    assert!(script.contains("installation: \"AVAILABLE\""));
     assert!(script.contains("cloned.marketplaceName = marketplaceName"));
     assert!(script.contains("cloned.marketplacePath = marketplaceName"));
     assert!(script.contains("restorePluginMarketplaceName"));
@@ -714,6 +718,8 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("installAppServerModelRequestPatch"));
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
+    assert!(script.contains("loadOptionalCodexAppModule"));
+    assert!(script.contains("model_app_server_request_patch_skipped"));
     assert!(script.contains("send-cli-request-for-host"));
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("scheduleCodexModelWhitelistRefresh"));
@@ -729,6 +735,7 @@ fn injection_script_unlocks_custom_model_catalog() {
 #[test]
 fn injection_script_exposes_fast_service_tier_control() {
     let script = assets::injection_script(57321);
+    let normalized_script = script.replace("\r\n", "\n");
 
     assert!(script.contains("default-service-tier"));
     assert!(script.contains("setting-storage-"));
@@ -741,7 +748,16 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("\"gpt-5.5\""));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
+    assert!(script.contains("codexServiceTierLastSupportedModelKey"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
+    assert!(
+        script
+            .contains("codexPlusBackendStatus.status === \"ok\" && codexPlusBackendSettingsLoaded")
+    );
+    assert!(
+        !normalized_script
+            .contains("void loadBackendSettingsForStartup();\n  void loadCodexServiceTierState();")
+    );
     assert!(script.contains("fastBlocked"));
     assert!(script.contains("data-tier=\"unsupported\""));
     assert!(script.contains("service_tier: override.serviceTier"));
@@ -780,11 +796,16 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+    assert!(script.contains("codexServiceTierLooksLikeModelButton"));
+    assert!(script.contains("codexServiceTierComposerFromTextInput"));
+    assert!(script.contains("codexServiceTierModelButtonPlacement"));
     assert!(script.contains("codexServiceTierFindComposerEl"));
     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
     assert!(script.contains("codexServiceTierBestComposerFooter"));
     assert!(script.contains("codexServiceTierComposerCandidates"));
     assert!(script.contains("codexServiceTierComposerScore"));
+    assert!(script.contains("[contenteditable='true']"));
+    assert!(script.contains("[role='textbox']"));
     assert!(script.contains("data-codex-service-tier-badge"));
     assert!(script.contains("codexServiceTierBadgeWired"));
     assert!(script.contains("setAttribute(\"role\", \"button\")"));
@@ -854,6 +875,19 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["turnWithoutModel"]["serviceTier"], "priority");
     assert_eq!(cases["turnWithoutModel"]["service_tier"], "priority");
     assert_eq!(cases["turnWithoutModelDiagnosticModel"], "gpt-5.4");
+
+    assert_eq!(
+        cases["catalogSupportedListFallback"]["serviceTier"],
+        "priority"
+    );
+    assert_eq!(
+        cases["catalogSupportedListFallbackDiagnosticModel"],
+        "gpt-5.5"
+    );
+
+    assert_eq!(cases["unknownModelAllowed"]["serviceTier"], "priority");
+    assert_eq!(cases["unknownModelAllowedFastBlocked"], false);
+    assert_eq!(cases["unknownModelAllowedDiagnosticModel"], "");
 
     assert_eq!(
         cases["customInheritUnsupported"]["serviceTier"],
@@ -947,6 +981,25 @@ const turnWithoutModel = api.applyServiceTierOverride("turn/start", {{
 }}, "conversation-should-not-be-model");
 const turnWithoutModelDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
 
+api.setModelCatalog({{ status: "ok", model: "", default_model: "", models: ["gpt-5.5"] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const catalogSupportedListFallback = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  service_tier: null,
+}}, "");
+const catalogSupportedListFallbackDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
+
+api.clearLastSupportedModel();
+api.setModelCatalog({{ status: "loading", model: "", default_model: "", models: [] }});
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const unknownModelAllowed = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  service_tier: null,
+}}, "");
+const unknownModelAllowedDiagnostic = api.diagnostics().at(-1)?.detail || {{}};
+const unknownModelAllowedDiagnosticModel = unknownModelAllowedDiagnostic.model;
+const unknownModelAllowedFastBlocked = unknownModelAllowedDiagnostic.fastBlocked;
+
 api.setModelCatalog({{ status: "ok", model: "gpt-4.1", default_model: "gpt-4.1", models: ["gpt-4.1"] }});
 api.setThreadState({{ mode: "custom", defaultMode: "inherit", entries: {{}}, draft: {{ mode: "inherit", at: Date.now() }} }});
 api.setServiceTierState({{ serviceTier: "priority" }});
@@ -968,6 +1021,11 @@ process.stdout.write(JSON.stringify({{
   unsupportedModel,
   turnWithoutModel,
   turnWithoutModelDiagnosticModel,
+  catalogSupportedListFallback,
+  catalogSupportedListFallbackDiagnosticModel,
+  unknownModelAllowed,
+  unknownModelAllowedDiagnosticModel,
+  unknownModelAllowedFastBlocked,
   customInheritUnsupported,
   startConversation,
 }}));
@@ -982,6 +1040,128 @@ process.stdout.write(JSON.stringify({{
         .arg(&harness_path)
         .output()
         .expect("node should run service-tier harness");
+    assert!(
+        output.status.success(),
+        "node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("harness stdout should be JSON")
+}
+
+#[test]
+fn injection_script_applies_projectless_main_window_contract() {
+    let script = assets::injection_script(57321);
+    assert!(script.contains("installCodexProjectlessNewTaskButtons"));
+    assert!(script.contains("generic-new-task-button"));
+    let cases = run_projectless_main_window_contract_harness();
+
+    assert_eq!(cases["englishNewTask"], "generic");
+    assert_eq!(cases["chineseNewTask"], "generic");
+    assert_eq!(cases["compactChineseNewTask"], "generic");
+    assert_eq!(cases["quickChat"], "generic");
+    assert_eq!(cases["explicitProject"], "project");
+    assert_eq!(cases["projectRow"], "project");
+    assert_eq!(cases["unrelated"], "");
+    assert_eq!(cases["genericEnabled"], true);
+    assert_eq!(cases["explicitProjectWins"], false);
+    assert_eq!(cases["disabledIsNoop"], false);
+}
+
+fn run_projectless_main_window_contract_harness() -> serde_json::Value {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("renderer-inject.js");
+    let harness_path = temp.path().join("projectless-main-window-harness.cjs");
+    std::fs::write(&script_path, assets::injection_script(57321))
+        .expect("injection script should be written");
+    let mut harness = std::fs::File::create(&harness_path).expect("harness should be created");
+    write!(
+        harness,
+        r#"
+const scriptPath = {script_path};
+const store = new Map();
+function node() {{
+  return {{
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
+    closest() {{ return null; }},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
+    dataset: {{}}, style: {{}}, children: [], isConnected: true, textContent: "", innerHTML: "",
+  }};
+}}
+function trigger(label, kind = "generic") {{
+  const value = {{
+    textContent: label,
+    getAttribute(name) {{ return name === "aria-label" ? label : null; }},
+    closest(selector) {{
+      if (selector.includes('Start new chat in') || selector.includes('data-app-action-sidebar-project-row')) {{
+        return kind === "project-button" || kind === "project-row" ? value : null;
+      }}
+      if (selector === 'button, a, [role="button"], [role="menuitem"]') return value;
+      return null;
+    }},
+  }};
+  return value;
+}}
+globalThis.window = globalThis;
+window.__CODEX_PLUS_TEST_PROJECTLESS__ = true;
+window.addEventListener = () => {{}};
+window.removeEventListener = () => {{}};
+window.dispatchEvent = () => true;
+globalThis.Element = class Element {{}};
+globalThis.HTMLElement = class HTMLElement extends Element {{}};
+globalThis.HTMLAnchorElement = class HTMLAnchorElement extends HTMLElement {{}};
+globalThis.MutationObserver = class MutationObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.ResizeObserver = class ResizeObserver {{ observe() {{}} disconnect() {{}} }};
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.document = {{
+  scripts: [], documentElement: node(), body: node(), createElement: () => node(),
+  getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
+  addEventListener() {{}}, removeEventListener() {{}},
+}};
+globalThis.localStorage = {{
+  getItem: (key) => store.has(key) ? store.get(key) : null,
+  setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key),
+}};
+globalThis.sessionStorage = globalThis.localStorage;
+globalThis.location = {{ href: "https://codex.test/index.html", pathname: "/index.html", search: "", hash: "" }};
+window.location = globalThis.location;
+globalThis.navigator = {{ userAgent: "node-test" }};
+globalThis.performance = {{ getEntriesByType: () => [] }};
+require(scriptPath);
+const api = window.__codexPlusProjectlessTest;
+const englishNewTask = api.triggerKind(trigger("New task"));
+const chineseNewTask = api.triggerKind(trigger("新建任务\nCtrl+N"));
+const compactChineseNewTask = api.triggerKind(trigger("新建任务Ctrl+N"));
+const quickChat = api.triggerKind(trigger("Quick Chat"));
+const explicitProject = api.triggerKind(trigger("Start new chat in Demo", "project-button"));
+const projectRow = api.triggerKind(trigger("Demo", "project-row"));
+const unrelated = api.triggerKind(trigger("Settings"));
+api.setEnabled(true);
+api.setIntent("generic", "test");
+const genericEnabled = api.shouldEnforce();
+api.setIntent("project", "test");
+const explicitProjectWins = api.shouldEnforce();
+api.setEnabled(false);
+api.setIntent("generic", "test");
+const disabledIsNoop = api.shouldEnforce();
+process.stdout.write(JSON.stringify({{
+  englishNewTask, chineseNewTask, compactChineseNewTask, quickChat, explicitProject, projectRow, unrelated,
+  genericEnabled, explicitProjectWins, disabledIsNoop,
+}}));
+process.exit(0);
+"#,
+        script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
+            .expect("script path should serialize")
+    )
+    .expect("harness should be written");
+    drop(harness);
+
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("node should run projectless main-window harness");
     assert!(
         output.status.success(),
         "node harness failed\nstdout:\n{}\nstderr:\n{}",
@@ -1055,6 +1235,7 @@ fn injection_script_installs_upstream_branch_dropdown_adapter() {
     assert!(script.contains("branchMenuInNewWorktreeMode"));
     assert!(script.contains("branchMenuTriggerIsBranchControl"));
     assert!(script.contains("actual-upstream-refs-v16"));
+    assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js"));
     assert!(script.contains("create and checkout new branch"));
     assert!(script.contains("if (/^start in"));
     assert!(script.contains("if (!branchMenuInNewWorktreeMode(trigger))"));

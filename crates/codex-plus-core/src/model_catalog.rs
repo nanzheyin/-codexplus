@@ -72,9 +72,20 @@ pub async fn read_codex_model_catalog() -> Value {
 }
 
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
-    let models = relay_profile_model_ids(profile);
-    let model = profile.model.trim().to_string();
-    let default_model = models.first().cloned().unwrap_or_default();
+    let (_live_config, live_effective, _live_error) = load_codex_config(&home.join("config.toml"));
+    let live_model = config_model_from_effective(&live_effective);
+    let profile_model = crate::relay_config::relay_profile_model(profile);
+    let model = if live_model.trim().is_empty() {
+        profile_model.trim().to_string()
+    } else {
+        live_model.trim().to_string()
+    };
+    let models = relay_profile_model_ids(profile, &model, &live_effective);
+    let default_model = if model.trim().is_empty() {
+        models.first().cloned().unwrap_or_default()
+    } else {
+        model.clone()
+    };
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
     } else {
@@ -104,17 +115,40 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
     })
 }
 
-fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
-    unique_strings(
-        profile
-            .model_list
-            .split(['\r', '\n', ','])
-            .chain(std::iter::once(profile.model.as_str()))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect(),
-    )
+fn relay_profile_model_ids(
+    profile: &RelayProfile,
+    current_model: &str,
+    live_effective: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut models = Vec::new();
+    push_model_candidate(&mut models, current_model);
+    push_model_candidate(
+        &mut models,
+        &crate::relay_config::relay_profile_model(profile),
+    );
+    push_model_candidate(&mut models, &config_model_from_effective(live_effective));
+    for item in profile.model_list.split(['\r', '\n', ',']) {
+        push_model_candidate(&mut models, item);
+    }
+    push_model_candidate(&mut models, &profile.model);
+    unique_strings(models)
+}
+
+fn push_model_candidate(models: &mut Vec<String>, value: &str) {
+    let (model, _) = crate::model_suffix::parse_model_suffix(value.trim());
+    let model = model.trim();
+    if !model.is_empty() {
+        models.push(model.to_string());
+    }
+}
+
+fn config_model_from_effective(effective: &HashMap<String, String>) -> String {
+    let model = string_value(effective.get("model"));
+    if model.is_empty() {
+        string_value(effective.get("default_model"))
+    } else {
+        model
+    }
 }
 
 pub async fn read_codex_model_catalog_from_home(

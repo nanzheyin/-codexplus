@@ -24,6 +24,7 @@ pub fn switch_relay_profile_in_home(
     if !selected_settings.relay_profiles_enabled {
         anyhow::bail!("供应商配置总开关已关闭，未写入 config.toml / auth.json。");
     }
+    crate::codex_app_state::capture_app_state_snapshot_nonfatal(home, "relay_switch.before");
 
     let original_settings = store.load().unwrap_or_default();
     if !previous_active_relay_id.trim().is_empty()
@@ -38,12 +39,49 @@ pub fn switch_relay_profile_in_home(
     let selected_settings = store.load().context("读取供应商设置失败")?;
 
     match apply_selected_relay_profile(home, &selected_settings) {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            finish_provider_switch_state_sync(home, &selected_settings, "relay_switch.after");
+            Ok(result)
+        }
         Err(error) => {
             let _ = store.save(&original_settings);
             Err(error)
         }
     }
+}
+
+fn finish_provider_switch_state_sync(home: &Path, settings: &BackendSettings, source: &str) {
+    if settings.codex_app_plugin_marketplace_unlock {
+        match crate::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(home) {
+            Ok(result) => {
+                if result.initialized || result.configured {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "relay_switch.remote_plugin_marketplace_ready",
+                        serde_json::json!({
+                            "source": source,
+                            "initialized": result.initialized,
+                            "configured": result.configured,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "relay_switch.remote_plugin_marketplace_failed",
+                    serde_json::json!({
+                        "source": source,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+    if settings.builtin_plugin_guard_enabled() {
+        crate::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
+            home, source,
+        );
+    }
+    crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(home, source);
 }
 
 fn backfill_profile_before_switch(
@@ -76,7 +114,7 @@ fn apply_selected_relay_profile(
         crate::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
             home,
             auth_contents,
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         )?
     } else {
         validate_switch_profile_files(&relay)?;
@@ -84,7 +122,7 @@ fn apply_selected_relay_profile(
             home,
             &relay,
             &common_config,
-            settings.computer_use_guard_enabled,
+            settings.builtin_plugin_guard_enabled(),
         )?
     };
     let status = relay_config_status_from_home(home);

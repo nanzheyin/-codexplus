@@ -1079,7 +1079,10 @@ fn write_codex_live_atomic(
     let config_text = guarded_config_text.as_deref();
 
     let config_text = match config_text {
-        Some(config_text) => Some(preserve_live_marketplace_configs(home, config_text)?),
+        Some(config_text) => {
+            let config_text = preserve_live_app_settings(home, config_text)?;
+            Some(preserve_live_marketplace_configs(home, &config_text)?)
+        }
         None => None,
     };
     let config_text = config_text.as_deref();
@@ -1397,6 +1400,42 @@ fn validate_toml_config(config_text: &str, path: &Path) -> anyhow::Result<()> {
 
 fn normalize_config_text_for_write(config_text: &str) -> String {
     config_text.trim_start_matches('\u{feff}').to_string()
+}
+
+fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    let normalized = normalize_config_text_for_write(config_text);
+    let mut target_doc = parse_toml_document(&normalized)?;
+    let live_text = read_optional_text(&home.join("config.toml"))?;
+    if !live_text.trim().is_empty() {
+        if let Ok(live_doc) = parse_toml_document(&live_text) {
+            for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write"] {
+                if let Some(value) = live_doc.get(key).cloned() {
+                    target_doc[key] = value;
+                }
+            }
+            if let Some(live_desktop) = live_doc.get("desktop").cloned() {
+                if !live_desktop.is_none() {
+                    merge_toml_item(&mut target_doc["desktop"], &live_desktop);
+                }
+            }
+        }
+    }
+
+    let context_usage_configured = target_doc
+        .get("desktop")
+        .and_then(Item::as_table)
+        .and_then(|desktop| desktop.get("show-context-window-usage"))
+        .is_some();
+    if !context_usage_configured {
+        if target_doc.get("desktop").is_none() {
+            target_doc["desktop"] = toml_edit::table();
+        }
+        if let Some(desktop) = target_doc["desktop"].as_table_mut() {
+            desktop["show-context-window-usage"] = toml_edit::value(true);
+        }
+    }
+
+    Ok(normalize_optional_toml(target_doc))
 }
 
 fn validate_auth_json(auth_bytes: &[u8], path: &Path) -> anyhow::Result<()> {
