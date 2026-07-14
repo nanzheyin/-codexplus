@@ -1,6 +1,7 @@
 use codex_plus_core::update::{
-    Release, download_asset_to, is_newer_version, parse_version_tag, release_from_github_payload,
-    release_from_latest_json_payload, safe_asset_name, select_update_asset,
+    DEFAULT_LATEST_JSON_URL, DEFAULT_REPOSITORY, Release, download_asset_to, is_newer_version,
+    parse_version_tag, release_from_github_payload, release_from_latest_json_payload,
+    safe_asset_name, select_update_asset,
 };
 use serde_json::json;
 
@@ -19,10 +20,19 @@ fn version_comparison_uses_numeric_segments() {
 }
 
 #[test]
+fn default_update_manifest_targets_fork_release() {
+    assert_eq!(DEFAULT_REPOSITORY, "xiamingjie123/-codexplus");
+    assert_eq!(
+        DEFAULT_LATEST_JSON_URL,
+        "https://github.com/xiamingjie123/-codexplus/releases/latest/download/latest.json"
+    );
+}
+
+#[test]
 fn github_payload_selects_platform_installer() {
     let release = release_from_github_payload(&json!({
         "tag_name": "v1.0.9",
-        "html_url": "https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.0.9",
+        "html_url": "https://github.com/xiamingjie123/-codexplus/releases/tag/v1.0.9",
         "body": "fixes",
         "assets": [
             {"name": "source.zip", "browser_download_url": "https://example.test/source.zip"},
@@ -53,7 +63,7 @@ fn github_payload_selects_platform_installer() {
 fn latest_json_payload_selects_platform_installer_without_github_api_shape() {
     let release = release_from_latest_json_payload(&json!({
         "version": "v1.1.6",
-        "url": "https://github.com/BigPizzaV3/CodexPlusPlus/releases/tag/v1.1.6",
+        "url": "https://github.com/xiamingjie123/-codexplus/releases/tag/v1.1.6",
         "body": "静态更新描述",
         "assets": [
             {"name": "source.zip", "url": "https://example.test/source.zip"},
