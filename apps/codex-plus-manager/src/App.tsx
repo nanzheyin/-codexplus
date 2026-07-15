@@ -1091,7 +1091,7 @@ export function App() {
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
+    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [truncateSessionDeletePreview(title)]));
     if (!confirmed) return;
     const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
@@ -5285,13 +5285,15 @@ function ConfirmDialog({
 }) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card">
+      <div className="modal-card confirm-modal">
         <div className="modal-head">
           <div>
             <h2>{confirm.title}</h2>
-            <p className="modal-message">{confirm.message}</p>
           </div>
           <button className="toast-close" onClick={onCancel} type="button">×</button>
+        </div>
+        <div className="confirm-modal-body">
+          <p className="modal-message">{confirm.message}</p>
         </div>
         <Toolbar>
           <Button onClick={onConfirm}>

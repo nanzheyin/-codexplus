@@ -2085,8 +2085,15 @@ body {
   padding: 18px;
 }
 
+.confirm-modal {
+  display: flex;
+  max-height: min(720px, calc(100vh - 48px));
+  flex-direction: column;
+}
+
 .modal-head {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -2105,9 +2112,27 @@ body {
   line-height: 1.5;
 }
 
+.confirm-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .modal-message {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.5;
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+.confirm-modal .toolbar {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border));
 }
 
 .session-index-cleanup-modal {
