@@ -42,13 +42,17 @@ pub fn delete_local_from_paths_with_cleanup(
     session: &SessionRef,
     codex_home: &Path,
 ) -> DeleteResult {
-    let mut result = delete_local_from_paths(db_paths, backup_store, session);
+    let resolved_session = SessionRef {
+        session_id: resolve_codex_thread_id(codex_home, &session.session_id),
+        title: session.title.clone(),
+    };
+    let mut result = delete_local_from_paths(db_paths, backup_store, &resolved_session);
     if !matches!(result.status, DeleteStatus::LocalDeleted) && !is_thread_not_found_result(&result)
     {
         return result;
     }
     let thread_id = if result.session_id.trim().is_empty() {
-        normalize_codex_thread_id(&session.session_id)
+        normalize_codex_thread_id(&resolved_session.session_id)
     } else {
         normalize_codex_thread_id(&result.session_id)
     };
@@ -59,7 +63,7 @@ pub fn delete_local_from_paths_with_cleanup(
                 result.message = format!("{}，并清理列表入口", result.message);
             } else if pruned_any {
                 result.status = DeleteStatus::LocalDeleted;
-                result.session_id = normalize_codex_thread_id(&session.session_id);
+                result.session_id = normalize_codex_thread_id(&resolved_session.session_id);
                 result.message = "本地记录已不存在，已清理残留列表入口".to_string();
             }
         }
@@ -918,6 +922,37 @@ fn normalize_codex_thread_id(session_id: &str) -> String {
         .or_else(|| session_id.strip_prefix("local%3a"))
         .unwrap_or(session_id)
         .to_string()
+}
+
+fn resolve_codex_thread_id(codex_home: &Path, session_id: &str) -> String {
+    let normalized = normalize_codex_thread_id(session_id);
+    let state = fs::read_to_string(codex_home.join(".codex-global-state.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let Some(atom_state) = state
+        .as_ref()
+        .and_then(|state| state.get("electron-persisted-atom-state"))
+        .and_then(Value::as_object)
+    else {
+        return normalized;
+    };
+    let matching_thread_ids = atom_state
+        .iter()
+        .filter_map(|(key, value)| {
+            let stored_client_id = value.as_str()?;
+            if normalize_codex_thread_id(stored_client_id) != normalized {
+                return None;
+            }
+            let stored_thread_id = key.strip_prefix("thread-client-id-v1:")?;
+            let stored_thread_id = normalize_codex_thread_id(stored_thread_id);
+            (!stored_thread_id.is_empty()).then_some(stored_thread_id)
+        })
+        .collect::<HashSet<_>>();
+    if matching_thread_ids.len() == 1 {
+        matching_thread_ids.into_iter().next().unwrap_or(normalized)
+    } else {
+        normalized
+    }
 }
 
 fn schema_kind(db: &Connection) -> anyhow::Result<Option<SchemaKind>> {

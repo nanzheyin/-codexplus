@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- 修复新版 Codex 侧边栏使用 `local:client-new-thread:*` 临时 ID 时，本机会话删除提示 `Thread not found in local storage` 的问题；删除前会通过本地应用状态解析真实 thread UUID，并在映射歧义时拒绝猜测删除。
+- 新增临时客户端 ID 正常解析与歧义保护回归测试，覆盖数据库记录、rollout 文件和侧边栏残留引用清理。
+
 ## 1.2.43 - 2026-07-15
 
 - 自动发布 `main` 分支最新提交。

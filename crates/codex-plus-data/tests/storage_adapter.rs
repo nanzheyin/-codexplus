@@ -585,6 +585,124 @@ fn delete_local_from_paths_with_cleanup_removes_stale_sidebar_ref_when_thread_is
 }
 
 #[test]
+fn delete_local_from_paths_with_cleanup_resolves_client_thread_id() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let db_path = sqlite_dir.join("state_5.sqlite");
+    let rollout = home.join("sessions/rollout-thread.jsonl");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(&rollout, "{\"type\":\"message\"}\n").unwrap();
+    let thread_id = "019f6441-9ee0-7622-9c97-30a4b619b37b";
+    let client_id = "client-new-thread:e12277b2-da73-4cf7-98d1-2b91167ca1e2";
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (id, rollout_path, title) VALUES (?1, ?2, ?3)",
+        (
+            thread_id,
+            rollout.to_string_lossy().to_string(),
+            "查明账号双代理",
+        ),
+    )
+    .unwrap();
+    drop(db);
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "projectless-thread-ids": [thread_id],
+            "electron-persisted-atom-state": {
+                format!("thread-client-id-v1:local%3A{thread_id}"): client_id,
+                "sidebar-width": 296
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = delete_local_from_paths_with_cleanup(
+        vec![db_path.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session(&format!("local:{client_id}"), "查明账号双代理"),
+        &home,
+    );
+
+    assert_eq!(result.status, DeleteStatus::LocalDeleted);
+    assert_eq!(result.session_id, thread_id);
+    assert_eq!(thread_count(&db_path, thread_id), 0);
+    assert!(!rollout.exists());
+    let state: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["projectless-thread-ids"], json!([]));
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-client-id-v1:local%3A{thread_id}"))
+            .is_none()
+    );
+    assert_eq!(
+        state["electron-persisted-atom-state"]["sidebar-width"],
+        json!(296)
+    );
+}
+
+#[test]
+fn delete_local_from_paths_with_cleanup_does_not_guess_ambiguous_client_thread_id() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let db_path = sqlite_dir.join("state_5.sqlite");
+    let first_thread_id = "019f6441-9ee0-7622-9c97-30a4b619b37b";
+    let second_thread_id = "019f6441-9ee0-7622-9c97-30a4b619b37c";
+    let client_id = "client-new-thread:e12277b2-da73-4cf7-98d1-2b91167ca1e2";
+    let db = Connection::open(&db_path).unwrap();
+    db.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (id, rollout_path, title) VALUES (?1, '', 'First')",
+        [first_thread_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads (id, rollout_path, title) VALUES (?1, '', 'Second')",
+        [second_thread_id],
+    )
+    .unwrap();
+    drop(db);
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "electron-persisted-atom-state": {
+                format!("thread-client-id-v1:local%3A{first_thread_id}"): client_id,
+                format!("thread-client-id-v1:local%3A{second_thread_id}"): client_id
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = delete_local_from_paths_with_cleanup(
+        vec![db_path.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        &session(&format!("local:{client_id}"), "Ambiguous"),
+        &home,
+    );
+
+    assert_eq!(result.status, DeleteStatus::Failed);
+    assert_eq!(thread_count(&db_path, first_thread_id), 1);
+    assert_eq!(thread_count(&db_path, second_thread_id), 1);
+}
+
+#[test]
 fn move_thread_workspace_from_paths_uses_database_that_contains_thread() {
     let tmp = tempdir().unwrap();
     let stale_db = tmp.path().join("stale.sqlite");
