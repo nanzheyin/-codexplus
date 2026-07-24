@@ -140,7 +140,7 @@ pub fn import_provider_with_store(
     };
     settings.relay_profiles.push(profile);
     settings.active_relay_id = result.profile_id.clone();
-    store.save(&settings)?;
+    store.update(serde_json::to_value(&settings)?)?;
     Ok(result)
 }
 
@@ -427,6 +427,34 @@ mod tests {
             settings.relay_profiles[1].upstream_base_url,
             "https://jojocode.com/v1"
         );
+    }
+
+    #[test]
+    fn import_provider_preserves_unknown_settings_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        std::fs::write(
+            &settings_path,
+            r#"{"providerSyncEnabled":false,"customField":{"nested":true}}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(settings_path.clone());
+        let request = ProviderImportRequest {
+            name: "JOJO Code".to_string(),
+            base_url: "https://jojocode.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            wire_api: "responses".to_string(),
+            relay_mode: "pureApi".to_string(),
+            config_contents: String::new(),
+            auth_contents: String::new(),
+        };
+
+        let result = import_provider_with_store(request, store).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+
+        assert_eq!(raw["customField"], serde_json::json!({"nested": true}));
+        assert_eq!(raw["activeRelayId"], serde_json::json!(result.profile_id));
     }
 
     #[test]

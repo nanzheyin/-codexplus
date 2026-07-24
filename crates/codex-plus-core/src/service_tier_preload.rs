@@ -44,8 +44,8 @@ const Module = require("module");
 
 const PATCH_MARK = Symbol.for("codex-plus.service-tier-protocol-handle-patched");
 const PATCH_VERSION = "protocol-handle-3";
-const LOG_PATH = path.join(process.env.HOME || process.cwd(), ".codex-session-delete", "codex-plus.log");
-const SETTINGS_PATH = path.join(process.env.HOME || process.cwd(), ".codex-session-delete", "settings.json");
+const LOG_PATH = path.join(process.env.HOME || process.cwd(), ".codex-deck", "codex-plus.log");
+const SETTINGS_PATH = path.join(process.env.HOME || process.cwd(), ".codex-deck", "settings.json");
 
 function log(event, detail) {
   try {

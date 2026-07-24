@@ -194,7 +194,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 | 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
 | 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
 | Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、图片覆盖层 |
-| 开发工作流 | 项目移动、Upstream worktree、线程 ID、Zed Remote 项目识别与打开 |
+| 开发工作流 | 项目移动、Upstream worktree 与线程 ID |
 | 脚本与维护 | 用户脚本安装与启停、应用检测、快捷方式、Watcher、环境冲突、日志诊断、健康检查和 Release 更新 |
 
 所有界面增强都可以单独关闭。关闭“Codex 增强”总开关后，Codex++ 仍可作为供应商和启动管理工具使用。
@@ -223,7 +223,7 @@ Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
 - 富文本粘贴转纯文本、强制中文、启动加速和原生菜单本地化。
 - 会话宽度、滚动位置恢复、线程 ID、服务层级切换和 Goals。
 - Stepwise 下一步建议，可单独配置 API、模型、建议数量与超时。
-- Upstream worktree、Zed Remote、自定义图片覆盖层和用户脚本。
+- Upstream worktree、自定义图片覆盖层和用户脚本。
 
 依赖注入脚本的设置通常需要保存后重新启动 Codex++ 才会生效。
 

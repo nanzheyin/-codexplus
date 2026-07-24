@@ -7,6 +7,7 @@ pub mod cdp;
 pub mod codex_app_state;
 pub mod codex_home;
 pub mod codex_local_storage;
+pub mod codex_oauth;
 pub mod codex_sqlite;
 mod computer_use_guard;
 pub mod diagnostic_log;
@@ -14,6 +15,8 @@ pub mod env_conflicts;
 pub mod http_client;
 pub mod install;
 pub mod launcher;
+pub mod legacy_import;
+pub mod local_relay;
 pub mod model_catalog;
 pub mod model_suffix;
 pub mod models;
@@ -21,6 +24,7 @@ pub mod native_menu;
 pub mod paths;
 pub mod plugin_marketplace;
 pub mod ports;
+pub mod product_identity;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;
@@ -42,7 +46,6 @@ pub mod version;
 pub mod watcher;
 #[cfg(windows)]
 mod windows_integration;
-pub mod zed_remote;
 
 #[cfg(windows)]
 pub fn windows_create_no_window() -> u32 {

@@ -8,24 +8,20 @@ use codex_plus_core::install::{
 fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
     let options = InstallOptions {
         install_root: Some("C:/Users/A/Desktop".into()),
-        launcher_path: Some("C:/Tools/codex-plus-plus.exe".into()),
-        manager_path: Some("C:/Tools/codex-plus-plus-manager.exe".into()),
+        launcher_path: Some("C:/Tools/codex-deck.exe".into()),
+        manager_path: Some("C:/Tools/codex-deck-manager.exe".into()),
         remove_owned_data: false,
     };
 
     let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(plan.silent_shortcut.ends_with("Codex++.lnk"));
-    assert!(plan.manager_shortcut.ends_with("Codex++ 管理工具.lnk"));
-    assert_eq!(plan.launcher_path, "C:/Tools/codex-plus-plus.exe");
-    assert_eq!(plan.manager_path, "C:/Tools/codex-plus-plus-manager.exe");
-    assert_eq!(plan.silent_icon_path, "C:/Tools/codex-plus-plus.exe");
-    assert_eq!(
-        plan.manager_icon_path,
-        "C:/Tools/codex-plus-plus-manager.exe"
-    );
-    assert_eq!(plan.uninstall_key, "CodexPlusPlus");
-    assert_eq!(plan.legacy_uninstall_key, "Codex++");
+    assert!(plan.silent_shortcut.ends_with("Codex Deck.lnk"));
+    assert!(plan.manager_shortcut.ends_with("Codex Deck 管理工具.lnk"));
+    assert_eq!(plan.launcher_path, "C:/Tools/codex-deck.exe");
+    assert_eq!(plan.manager_path, "C:/Tools/codex-deck-manager.exe");
+    assert_eq!(plan.silent_icon_path, "C:/Tools/codex-deck.exe");
+    assert_eq!(plan.manager_icon_path, "C:/Tools/codex-deck-manager.exe");
+    assert_eq!(plan.uninstall_key, "CodexDeck");
     assert_eq!(
         plan.uninstaller_path.replace('\\', "/"),
         "C:/Tools/uninstall.exe"
@@ -40,7 +36,7 @@ fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
     );
     assert_ne!(
         plan.uninstall_command,
-        "\"C:/Tools/codex-plus-plus-manager.exe\""
+        "\"C:/Tools/codex-deck-manager.exe\""
     );
 }
 
@@ -55,8 +51,8 @@ fn windows_entrypoint_plan_can_request_owned_data_removal_without_shell_script()
 
     let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(plan.silent_shortcut.ends_with("Codex++.lnk"));
-    assert!(plan.manager_shortcut.ends_with("Codex++ 管理工具.lnk"));
+    assert!(plan.silent_shortcut.ends_with("Codex Deck.lnk"));
+    assert!(plan.manager_shortcut.ends_with("Codex Deck 管理工具.lnk"));
     assert!(plan.remove_owned_data);
 }
 
@@ -64,42 +60,41 @@ fn windows_entrypoint_plan_can_request_owned_data_removal_without_shell_script()
 fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
-        launcher_path: Some("/opt/Codex++/codex-plus-plus".into()),
-        manager_path: Some("/opt/Codex++/codex-plus-plus-manager".into()),
+        launcher_path: Some("/opt/Codex Deck/codex-deck".into()),
+        manager_path: Some("/opt/Codex Deck/codex-deck-manager".into()),
         remove_owned_data: false,
     };
 
     let silent = build_macos_app_bundle(&options, false);
     let manager = build_macos_app_bundle(&options, true);
 
-    assert!(silent.app_path.ends_with("Codex++.app"));
-    assert!(manager.app_path.ends_with("Codex++ 管理工具.app"));
-    assert!(silent.info_plist.contains("<string>Codex++</string>"));
+    assert!(silent.app_path.ends_with("Codex Deck.app"));
+    assert!(manager.app_path.ends_with("Codex Deck 管理工具.app"));
+    assert!(silent.info_plist.contains("<string>Codex Deck</string>"));
     assert!(
         manager
             .info_plist
-            .contains("<string>Codex++ 管理工具</string>")
+            .contains("<string>Codex Deck 管理工具</string>")
     );
-    assert_eq!(
-        silent.binary_target_name.as_deref(),
-        Some("codex-plus-plus")
-    );
+    assert_eq!(silent.binary_target_name.as_deref(), Some("codex-deck"));
     assert_eq!(
         manager.binary_target_name.as_deref(),
-        Some("codex-plus-plus-manager")
+        Some("codex-deck-manager")
     );
-    assert!(silent.launch_script.contains("$DIR/codex-plus-plus"));
-    assert!(
-        manager
-            .launch_script
-            .contains("$DIR/codex-plus-plus-manager")
-    );
+    assert!(silent.launch_script.contains("$DIR/codex-deck"));
+    assert!(manager.launch_script.contains("$DIR/codex-deck-manager"));
 }
 
 #[test]
 fn installer_exports_expected_two_entrypoint_names() {
-    assert_eq!(shortcut_names(), ("Codex++.lnk", "Codex++ 管理工具.lnk"));
-    assert_eq!(app_bundle_names(), ("Codex++.app", "Codex++ 管理工具.app"));
+    assert_eq!(
+        shortcut_names(),
+        ("Codex Deck.lnk", "Codex Deck 管理工具.lnk")
+    );
+    assert_eq!(
+        app_bundle_names(),
+        ("Codex Deck.app", "Codex Deck 管理工具.app")
+    );
 }
 
 #[test]
@@ -124,26 +119,24 @@ fn macos_dmg_retries_transient_hdiutil_failures() {
 #[test]
 fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
     let manager_exe = std::path::Path::new(
-        "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager",
+        "/Applications/Codex Deck 管理工具.app/Contents/MacOS/CodexDeckManager",
     );
 
     let companion = companion_binary_path_from_exe(manager_exe, SILENT_BINARY);
 
     assert_eq!(
         companion,
-        std::path::PathBuf::from("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus")
+        std::path::PathBuf::from("/Applications/Codex Deck.app/Contents/MacOS/CodexDeck")
     );
     assert_ne!(
         companion,
-        std::path::PathBuf::from(
-            "/Applications/Codex++ 管理工具.app/Contents/MacOS/codex-plus-plus"
-        )
+        std::path::PathBuf::from("/Applications/Codex Deck 管理工具.app/Contents/MacOS/codex-deck")
     );
 }
 
 #[test]
 fn companion_binary_path_resolves_macos_manager_app_next_to_silent_app() {
-    let silent_exe = std::path::Path::new("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus");
+    let silent_exe = std::path::Path::new("/Applications/Codex Deck.app/Contents/MacOS/CodexDeck");
 
     let companion =
         companion_binary_path_from_exe(silent_exe, codex_plus_core::install::MANAGER_BINARY);
@@ -151,7 +144,7 @@ fn companion_binary_path_resolves_macos_manager_app_next_to_silent_app() {
     assert_eq!(
         companion,
         std::path::PathBuf::from(
-            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+            "/Applications/Codex Deck 管理工具.app/Contents/MacOS/CodexDeckManager"
         )
     );
 }
@@ -160,9 +153,9 @@ fn companion_binary_path_resolves_macos_manager_app_next_to_silent_app() {
 fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
-        launcher_path: Some("/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus".into()),
+        launcher_path: Some("/Applications/Codex Deck.app/Contents/MacOS/CodexDeck".into()),
         manager_path: Some(
-            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager".into(),
+            "/Applications/Codex Deck 管理工具.app/Contents/MacOS/CodexDeckManager".into(),
         ),
         remove_owned_data: false,
     };
@@ -173,21 +166,17 @@ fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     assert_eq!(
         silent.binary_source,
         Some(std::path::PathBuf::from(
-            "/Applications/Codex++.app/Contents/MacOS/CodexPlusPlus"
+            "/Applications/Codex Deck.app/Contents/MacOS/CodexDeck"
         ))
     );
     assert_eq!(
         manager.binary_source,
         Some(std::path::PathBuf::from(
-            "/Applications/Codex++ 管理工具.app/Contents/MacOS/CodexPlusPlusManager"
+            "/Applications/Codex Deck 管理工具.app/Contents/MacOS/CodexDeckManager"
         ))
     );
-    assert!(silent.launch_script.contains("$DIR/codex-plus-plus"));
-    assert!(
-        manager
-            .launch_script
-            .contains("$DIR/codex-plus-plus-manager")
-    );
+    assert!(silent.launch_script.contains("$DIR/codex-deck"));
+    assert!(manager.launch_script.contains("$DIR/codex-deck-manager"));
 }
 
 #[test]

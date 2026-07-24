@@ -229,6 +229,7 @@ pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
+    bridge_runtime: Arc<BridgeRuntimeState>,
     computer_use_guard_watchdog: Mutex<Option<ComputerUseGuardWatchdogRuntime>>,
     computer_use_guard_artifacts: Mutex<Option<crate::computer_use_guard::GuardArtifacts>>,
     /// Oneshot receiver set by `launch_codex` when the CDP signal appears on stderr.
@@ -249,6 +250,41 @@ struct BridgeWatchdogRuntime {
 struct ComputerUseGuardWatchdogRuntime {
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BridgeRuntimeState {
+    install_lock: Mutex<()>,
+    runtime: Mutex<Option<crate::bridge::BridgeRuntime>>,
+}
+
+impl BridgeRuntimeState {
+    async fn install(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let _install_guard = self.install_lock.lock().await;
+        let runtime = retry_injection(debug_port, helper_port).await?;
+        self.replace(runtime).await;
+        Ok(())
+    }
+
+    async fn install_once(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let _install_guard = self.install_lock.lock().await;
+        let runtime = try_inject(debug_port, helper_port).await?;
+        self.replace(runtime).await;
+        Ok(())
+    }
+
+    async fn replace(&self, runtime: crate::bridge::BridgeRuntime) {
+        let old_runtime = self.runtime.lock().await.replace(runtime);
+        if let Some(old_runtime) = old_runtime {
+            old_runtime.shutdown().await;
+        }
+    }
+
+    async fn shutdown(&self) {
+        if let Some(runtime) = self.runtime.lock().await.take() {
+            runtime.shutdown().await;
+        }
+    }
 }
 
 pub async fn launch_and_inject(options: LaunchOptions) -> anyhow::Result<LaunchHandle> {
@@ -560,7 +596,7 @@ fn start_native_menu_localizer(inspector_port: u16) {
 #[cfg(windows)]
 fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
     let icon_resource_path =
-        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-plus-plus.exe"));
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex-deck.exe"));
     tokio::spawn(async move {
         for attempt in 1..=30 {
             if crate::windows_apply_codexplusplus_icon_to_process_window(
@@ -614,6 +650,90 @@ impl IntoLaunchHooks for DefaultLaunchHooks {
 impl DefaultLaunchHooks {
     pub fn shared() -> Arc<dyn LaunchHooks> {
         Arc::new(Self::default())
+    }
+
+    pub async fn helper_running(&self) -> bool {
+        self.helper.lock().await.is_some()
+    }
+
+    pub async fn stop_helper(&self) {
+        if let Some(runtime) = self.helper.lock().await.take() {
+            let _ = runtime.shutdown.send(());
+            let _ = runtime.task.await;
+        }
+    }
+
+    pub async fn start_helper_with_api_key(
+        &self,
+        helper_port: u16,
+        api_key: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if self.helper_running().await {
+            return Ok(());
+        }
+        let requires_owned_listener = api_key
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let bind_host = helper_bind_host();
+        let listener = match tokio::net::TcpListener::bind((bind_host.as_str(), helper_port)).await
+        {
+            Ok(listener) => listener,
+            Err(error)
+                if !requires_owned_listener
+                    && error.kind() == std::io::ErrorKind::AddrInUse
+                    && tokio::net::TcpStream::connect((bind_host.as_str(), helper_port))
+                        .await
+                        .is_ok() =>
+            {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "helper.reused_existing",
+                    serde_json::json!({
+                        "helper_port": helper_port,
+                        "bind_host": bind_host
+                    }),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to bind helper runtime on {bind_host}:{helper_port}")
+                });
+            }
+        };
+        let api_key = api_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.listening",
+            serde_json::json!({
+                "helper_port": helper_port,
+                "bind_host": bind_host,
+                "address": format!("http://{bind_host}:{helper_port}"),
+                "auth_enabled": api_key.is_some()
+            }),
+        );
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    accepted = listener.accept() => {
+                        if let Ok((stream, addr)) = accepted {
+                            let api_key = api_key.clone();
+                            tokio::spawn(async move {
+                                let _ = handle_helper_connection(stream, Some(addr), api_key.as_deref()).await;
+                            });
+                        }
+                    }
+                }
+            }
+        });
+        *self.helper.lock().await = Some(HelperRuntime {
+            shutdown: shutdown_tx,
+            task,
+        });
+        Ok(())
     }
 
     pub async fn start_bridge_watchdog_with_reinjector<F, Fut>(
@@ -845,40 +965,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
-        let bind_host = helper_bind_host();
-        let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
-            .await
-            .with_context(|| {
-                format!("failed to bind helper runtime on {bind_host}:{helper_port}")
-            })?;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "helper.listening",
-            serde_json::json!({
-                "helper_port": helper_port,
-                "bind_host": bind_host,
-                "address": format!("http://{bind_host}:{helper_port}")
-            }),
-        );
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => {
-                        if let Ok((stream, addr)) = accepted {
-                            tokio::spawn(async move {
-                                let _ = handle_helper_connection(stream, Some(addr)).await;
-                            });
-                        }
-                    }
-                }
-            }
-        });
-        *self.helper.lock().await = Some(HelperRuntime {
-            shutdown: shutdown_tx,
-            task,
-        });
-        Ok(())
+        self.start_helper_with_api_key(helper_port, None).await
     }
 
     async fn launch_codex(
@@ -1056,7 +1143,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-        retry_injection(debug_port, helper_port).await
+        self.bridge_runtime.install(debug_port, helper_port).await
     }
     async fn start_bridge_watchdog(
         &self,
@@ -1064,8 +1151,10 @@ impl LaunchHooks for DefaultLaunchHooks {
         helper_port: u16,
         _app_dir: &Path,
     ) -> anyhow::Result<()> {
+        let bridge_runtime = Arc::clone(&self.bridge_runtime);
         self.start_bridge_watchdog_with_reinjector(debug_port, helper_port, move || {
-            retry_injection(debug_port, helper_port)
+            let bridge_runtime = Arc::clone(&bridge_runtime);
+            async move { bridge_runtime.install(debug_port, helper_port).await }
         })
         .await
     }
@@ -1161,10 +1250,8 @@ impl LaunchHooks for DefaultLaunchHooks {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
         }
-        if let Some(runtime) = self.helper.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
+        self.bridge_runtime.shutdown().await;
+        self.stop_helper().await;
     }
 
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, _app_dir: &Path) -> bool {
@@ -1177,7 +1264,12 @@ impl LaunchHooks for DefaultLaunchHooks {
             match signal {
                 Ok(Ok(())) => {
                     // CDP is ready — try injection once; it should succeed.
-                    if try_inject(debug_port, helper_port).await.is_ok() {
+                    if self
+                        .bridge_runtime
+                        .install_once(debug_port, helper_port)
+                        .await
+                        .is_ok()
+                    {
                         return true;
                     }
                 }
@@ -1192,7 +1284,12 @@ impl LaunchHooks for DefaultLaunchHooks {
         // Handles packaged apps where stderr is not available.
         let backoff_ms = [100u64, 200, 400, 800, 1_600, 3_200, 5_000, 10_000];
         for delay_ms in &backoff_ms {
-            if try_inject(debug_port, helper_port).await.is_ok() {
+            if self
+                .bridge_runtime
+                .install_once(debug_port, helper_port)
+                .await
+                .is_ok()
+            {
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
@@ -1200,7 +1297,12 @@ impl LaunchHooks for DefaultLaunchHooks {
 
         // Phase 3: 1s-interval polling as ultimate safety net.
         for _attempt in 1..=30u32 {
-            if try_inject(debug_port, helper_port).await.is_ok() {
+            if self
+                .bridge_runtime
+                .install_once(debug_port, helper_port)
+                .await
+                .is_ok()
+            {
                 return true;
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -1247,6 +1349,7 @@ impl LaunchHooks for DefaultLaunchHooks {
 async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
+    api_key: Option<&str>,
 ) -> anyhow::Result<()> {
     let request_bytes = read_http_request(&mut stream).await?;
     let request = String::from_utf8_lossy(&request_bytes);
@@ -1258,6 +1361,37 @@ async fn handle_helper_connection(
     let request_body = http_request_body(&request);
     let request_user_agent = header_value_from_request(&request, "user-agent");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
+
+    let expected_authorization = api_key.map(|key| format!("Bearer {key}"));
+    if method != "OPTIONS"
+        && is_protected_local_relay_path(path)
+        && expected_authorization.is_some()
+        && header_value_from_request(&request, "authorization") != expected_authorization
+    {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "error": {
+                "message": "Invalid local relay API key",
+                "type": "authentication_error",
+                "code": "invalid_api_key"
+            }
+        }))?;
+        write_http_response(
+            &mut stream,
+            "401 Unauthorized",
+            "application/json; charset=utf-8",
+            &body,
+        )
+        .await?;
+        log_helper_response(
+            "helper.local_relay_unauthorized",
+            method,
+            path,
+            "401 Unauthorized",
+            remote_addr_text,
+        );
+        stream.shutdown().await?;
+        return Ok(());
+    }
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "helper.request",
@@ -1390,6 +1524,12 @@ async fn handle_helper_connection(
     }
     stream.shutdown().await?;
     Ok(())
+}
+
+fn is_protected_local_relay_path(path: &str) -> bool {
+    crate::protocol_proxy::is_responses_proxy_path(path)
+        || crate::protocol_proxy::is_chat_completions_proxy_path(path)
+        || crate::protocol_proxy::is_models_proxy_path(path)
 }
 
 fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
@@ -2081,11 +2221,14 @@ pub async fn wait_for_cdp_ready(
     }
 }
 
-async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+async fn retry_injection(
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<crate::bridge::BridgeRuntime> {
     let mut last_error = None;
     for _ in 0..20 {
         match try_inject(debug_port, helper_port).await {
-            Ok(()) => return Ok(()),
+            Ok(runtime) => return Ok(runtime),
             Err(error) => {
                 last_error = Some(error);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2093,13 +2236,6 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
-}
-
-pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    check_and_reinject_bridge_with(debug_port, helper_port, &|| {
-        retry_injection(debug_port, helper_port)
-    })
-    .await
 }
 
 async fn check_and_reinject_bridge_with<F, Fut>(
@@ -2198,7 +2334,10 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
-async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+async fn try_inject(
+    debug_port: u16,
+    helper_port: u16,
+) -> anyhow::Result<crate::bridge::BridgeRuntime> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
@@ -2834,6 +2973,43 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn authenticated_helper_rejects_an_occupied_port() {
+        let occupied = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let runtime = DefaultLaunchHooks::default();
+
+        let error = runtime
+            .start_helper_with_api_key(port, Some("local-relay-key"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("failed to bind helper runtime"));
+        assert!(!runtime.helper_running().await);
+    }
+
+    #[tokio::test]
+    async fn authenticated_helper_releases_its_port_when_stopped() {
+        let reservation = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let runtime = DefaultLaunchHooks::default();
+
+        runtime
+            .start_helper_with_api_key(port, Some("local-relay-key"))
+            .await
+            .unwrap();
+        assert!(runtime.helper_running().await);
+
+        runtime.stop_helper().await;
+
+        assert!(!runtime.helper_running().await);
+        let rebound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
+        assert!(rebound.is_ok());
+    }
 
     #[tokio::test]
     async fn unhealthy_bridge_uses_supplied_reinjector() {

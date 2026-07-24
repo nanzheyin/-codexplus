@@ -343,7 +343,7 @@ fn is_macos_native_arch_asset(name: &str) -> bool {
 
 fn is_windows_installer_asset(name: &str) -> bool {
     name.contains("codex")
-        && name.contains("plus")
+        && (name.contains("plus") || name.contains("deck"))
         && (name.ends_with(".msi")
             || name.ends_with("-setup.exe")
             || name.ends_with("_setup.exe")
@@ -354,7 +354,9 @@ fn is_windows_installer_asset(name: &str) -> bool {
 fn is_macos_installer_asset(name: &str) -> bool {
     // Loose shape check; arch preference is handled by platform_asset_rank
     // via is_macos_native_arch_asset.
-    name.contains("codex") && name.contains("plus") && name.ends_with(".dmg")
+    name.contains("codex")
+        && (name.contains("plus") || name.contains("deck"))
+        && name.ends_with(".dmg")
 }
 
 pub fn launch_installer(path: &Path) -> anyhow::Result<()> {

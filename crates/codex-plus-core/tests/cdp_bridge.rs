@@ -515,6 +515,22 @@ fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
 }
 
 #[test]
+fn injection_script_scopes_plugin_auto_expand_and_chat_scans() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains(
+        "const route = `${window.location?.pathname || \"\"}${window.location?.hash || \"\"}`;"
+    ));
+    assert!(script.contains("const chatSelector = '[data-message-author-role], [data-testid=\"conversation-turn\"], main .prose';"));
+    assert!(
+        script.contains(
+            "if (!shouldScheduleScan(mutations)) return;\n    schedulePluginAutoExpand();"
+        )
+    );
+    assert!(!script.contains("const text = String(document.body?.innerText || \"\");\n    return /插件|Plugins?|Marketplace|市场/i.test(text)"));
+}
+
+#[test]
 fn injection_script_defines_version_gated_plugin_unlock_strategy() {
     let script = assets::injection_script(57321);
 
@@ -1847,7 +1863,7 @@ async fn install_bridge_routes_binding_while_waiting_for_command_response() {
         })
     };
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(&url, BRIDGE_BINDING_NAME, handler, &[]),
     )
@@ -1903,7 +1919,7 @@ async fn install_bridge_immediately_evaluates_new_document_scripts() {
     })
     .await;
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(
             &url,
@@ -1987,7 +2003,7 @@ async fn install_bridge_returns_after_installing_and_keeps_message_pump_alive() 
         })
     };
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(
             &url,
@@ -2004,6 +2020,34 @@ async fn install_bridge_returns_after_installing_and_keeps_message_pump_alive() 
         .await
         .expect("server task should finish without panicking");
     assert!(handled.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn bridge_runtime_shutdown_closes_message_pump() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        for expected_id in 1..=5 {
+            let command = recv_json(&mut socket).await;
+            assert_eq!(command["id"], expected_id);
+            send_json(&mut socket, json!({ "id": expected_id, "result": {} })).await;
+        }
+
+        let _ = tokio::time::timeout(Duration::from_secs(2), socket.next()).await;
+    })
+    .await;
+
+    let runtime = tokio::time::timeout(
+        Duration::from_secs(2),
+        bridge::install_bridge(&url, BRIDGE_BINDING_NAME, noop_handler(), &[]),
+    )
+    .await
+    .expect("bridge install should return before shutdown")
+    .expect("bridge install should succeed");
+
+    runtime.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), request_rx)
+        .await
+        .expect("CDP server should observe bridge shutdown")
+        .expect("CDP server task should finish without panicking");
 }
 
 #[tokio::test]
@@ -2114,7 +2158,7 @@ async fn install_bridge_rejects_bad_payload_with_id_and_continues_after_unparsea
     })
     .await;
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(&url, BRIDGE_BINDING_NAME, noop_handler(), &[]),
     )
@@ -2175,7 +2219,7 @@ async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch()
             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
     });
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(&url, BRIDGE_BINDING_NAME, handler, &[]),
     )
@@ -2245,7 +2289,7 @@ async fn install_bridge_does_not_wait_for_resolve_runtime_evaluate_ack() {
             as Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
     });
 
-    tokio::time::timeout(
+    let _runtime = tokio::time::timeout(
         Duration::from_secs(2),
         bridge::install_bridge(&url, BRIDGE_BINDING_NAME, handler, &[]),
     )

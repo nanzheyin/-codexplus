@@ -7,8 +7,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
-use crate::zed_remote::ZedOpenStrategy;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchMode {
@@ -256,14 +254,6 @@ pub struct BackendSettings {
     pub codex_app_conversation_view: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
     pub codex_app_thread_scroll_restore: bool,
-    #[serde(rename = "codexAppZedRemoteOpen", default = "default_true")]
-    pub codex_app_zed_remote_open: bool,
-    #[serde(rename = "zedRemoteOpenStrategy", default)]
-    pub zed_remote_open_strategy: ZedOpenStrategy,
-    #[serde(rename = "zedRemoteProjectRegistryEnabled", default = "default_true")]
-    pub zed_remote_project_registry_enabled: bool,
-    #[serde(rename = "zedRemoteSyncToZedSettings", default)]
-    pub zed_remote_sync_to_zed_settings: bool,
     #[serde(rename = "codexAppUpstreamWorktreeCreate", default = "default_true")]
     pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
@@ -451,10 +441,6 @@ impl Default for BackendSettings {
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
-            codex_app_zed_remote_open: true,
-            zed_remote_open_strategy: ZedOpenStrategy::AddToFocusedWorkspace,
-            zed_remote_project_registry_enabled: true,
-            zed_remote_sync_to_zed_settings: false,
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
             codex_app_native_menu_localization: true,
@@ -794,6 +780,10 @@ impl SettingsStore {
         Self { path }
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
         let contents = match fs::read_to_string(&self.path) {
             Ok(contents) => contents,
@@ -883,6 +873,45 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
     }
+    if let Some(value) = source
+        .get("providerSyncSavedProviders")
+        .and_then(Value::as_array)
+    {
+        target.insert(
+            "providerSyncSavedProviders".to_string(),
+            Value::Array(
+                value
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|item| Value::String(item.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(value) = source
+        .get("providerSyncManualProviders")
+        .and_then(Value::as_array)
+    {
+        target.insert(
+            "providerSyncManualProviders".to_string(),
+            Value::Array(
+                value
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|item| Value::String(item.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(value) = source
+        .get("providerSyncLastSelectedProvider")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "providerSyncLastSelectedProvider".to_string(),
+            Value::String(value.to_string()),
+        );
+    }
     if let Some(value) = source.get("relayProfilesEnabled").and_then(Value::as_bool) {
         target.insert("relayProfilesEnabled".to_string(), Value::Bool(value));
     }
@@ -908,14 +937,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
-    merge_bool_setting(target, source, "codexAppZedRemoteOpen");
-    if let Some(value) = source.get("zedRemoteOpenStrategy") {
-        if serde_json::from_value::<ZedOpenStrategy>(value.clone()).is_ok() {
-            target.insert("zedRemoteOpenStrategy".to_string(), value.clone());
-        }
-    }
-    merge_bool_setting(target, source, "zedRemoteProjectRegistryEnabled");
-    merge_bool_setting(target, source, "zedRemoteSyncToZedSettings");
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
@@ -1101,6 +1122,11 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
                 value.trim().to_string()
             }),
         );
+    }
+    if let Some(value) = source.get("visionRelay") {
+        if serde_json::from_value::<VisionRelayConfig>(value.clone()).is_ok() {
+            target.insert("visionRelay".to_string(), value.clone());
+        }
     }
 }
 
@@ -1407,12 +1433,6 @@ mod tests {
         assert!(!settings.codex_app_goal_resume_guard);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
-        assert_eq!(
-            settings.zed_remote_open_strategy,
-            ZedOpenStrategy::AddToFocusedWorkspace
-        );
-        assert!(settings.zed_remote_project_registry_enabled);
-        assert!(!settings.zed_remote_sync_to_zed_settings);
         assert!(settings.codex_app_native_menu_localization);
         assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());

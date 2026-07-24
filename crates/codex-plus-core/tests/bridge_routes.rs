@@ -35,28 +35,6 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         ("/ads", json!({})),
-        ("/zed-remote/status", json!({})),
-        (
-            "/zed-remote/resolve-host",
-            json!({"hostId": "remote-ssh-codex-managed:remote"}),
-        ),
-        (
-            "/zed-remote/fallback-request",
-            json!({"hostId": "remote-ssh-codex-managed:remote"}),
-        ),
-        (
-            "/zed-remote/open",
-            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
-        ),
-        ("/zed-remote/projects", json!({})),
-        (
-            "/zed-remote/remember-project",
-            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
-        ),
-        (
-            "/zed-remote/forget-project",
-            json!({"id": "zed-remote-project:test"}),
-        ),
         ("/upstream-worktree/status", json!({})),
         ("/upstream-worktree/defaults", json!({"repoPath": "/repo"})),
         (
@@ -373,79 +351,6 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
         json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
-    );
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/zed-remote/status", json!({})).await,
-        json!({"status": "ok", "platformSupported": true, "zedAppFound": true, "zedCliFound": false})
-    );
-    assert_eq!(
-        handle_bridge_request(
-            ctx.clone(),
-            "/zed-remote/resolve-host",
-            json!({"hostId": "remote-ssh-codex-managed:remote"}),
-        )
-        .await,
-        json!({"status": "ok", "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}})
-    );
-    assert_eq!(
-        handle_bridge_request(
-            ctx.clone(),
-            "/zed-remote/fallback-request",
-            json!({"hostId": "remote-ssh-codex-managed:remote"}),
-        )
-        .await,
-        json!({
-            "status": "ok",
-            "request": {
-                "hostId": "remote-ssh-codex-managed:remote",
-                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
-                "path": "/Users/longnv/bin/repo/sealos-skills",
-            }
-        })
-    );
-    assert_eq!(
-        handle_bridge_request(
-            ctx.clone(),
-            "/zed-remote/open",
-            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
-        )
-        .await,
-        json!({"status": "ok", "url": "ssh://example.com/home/app.py", "strategy": "addToFocusedWorkspace"})
-    );
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/zed-remote/projects", json!({})).await,
-        json!({
-            "status": "ok",
-            "projects": [{
-                "id": "zed-remote-project:test",
-                "label": "sealos-skills",
-                "hostId": "remote-ssh-codex-managed:remote",
-                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
-                "path": "/Users/longnv/bin/repo/sealos-skills",
-                "url": "ssh://longnv@192.168.100.31/Users/longnv/bin/repo/sealos-skills",
-                "source": "codexRemoteProject",
-                "lastOpenedAtMs": null,
-                "isCurrent": false
-            }]
-        })
-    );
-    assert_eq!(
-        handle_bridge_request(
-            ctx.clone(),
-            "/zed-remote/remember-project",
-            json!({"ssh": {"host": "example.com"}, "path": "/home/app.py"}),
-        )
-        .await,
-        json!({"status": "ok", "remembered": true})
-    );
-    assert_eq!(
-        handle_bridge_request(
-            ctx,
-            "/zed-remote/forget-project",
-            json!({"id": "zed-remote-project:test"}),
-        )
-        .await,
-        json!({"status": "ok", "removed": 1})
     );
 }
 
@@ -1101,7 +1006,6 @@ impl BridgeSettingsService for FakeSettings {
             "codexAppThreadIdBadge",
             "codexAppConversationView",
             "codexAppThreadScrollRestore",
-            "codexAppZedRemoteOpen",
             "codexAppUpstreamWorktreeCreate",
             "codexAppNativeMenuPlacement",
             "codexAppServiceTierControls",
@@ -1199,69 +1103,6 @@ impl BridgeRuntimeService for FakeRuntime {
 
     async fn ads(&self) -> anyhow::Result<Value> {
         Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
-    }
-
-    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "ok",
-            "platformSupported": true,
-            "zedAppFound": true,
-            "zedCliFound": false
-        }))
-    }
-
-    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["hostId"], json!("remote-ssh-codex-managed:remote"));
-        Ok(json!({
-            "status": "ok",
-            "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null}
-        }))
-    }
-
-    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["hostId"], json!("remote-ssh-codex-managed:remote"));
-        Ok(json!({
-            "status": "ok",
-            "request": {
-                "hostId": "remote-ssh-codex-managed:remote",
-                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
-                "path": "/Users/longnv/bin/repo/sealos-skills",
-            }
-        }))
-    }
-
-    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["path"], json!("/home/app.py"));
-        Ok(
-            json!({"status": "ok", "url": "ssh://example.com/home/app.py", "strategy": "addToFocusedWorkspace"}),
-        )
-    }
-
-    async fn list_zed_remote_projects(&self, _payload: Value) -> anyhow::Result<Value> {
-        Ok(json!({
-            "status": "ok",
-            "projects": [{
-                "id": "zed-remote-project:test",
-                "label": "sealos-skills",
-                "hostId": "remote-ssh-codex-managed:remote",
-                "ssh": {"user": "longnv", "host": "192.168.100.31", "port": null},
-                "path": "/Users/longnv/bin/repo/sealos-skills",
-                "url": "ssh://longnv@192.168.100.31/Users/longnv/bin/repo/sealos-skills",
-                "source": "codexRemoteProject",
-                "lastOpenedAtMs": null,
-                "isCurrent": false
-            }]
-        }))
-    }
-
-    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["path"], json!("/home/app.py"));
-        Ok(json!({"status": "ok", "remembered": true}))
-    }
-
-    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        assert_eq!(payload["id"], json!("zed-remote-project:test"));
-        Ok(json!({"status": "ok", "removed": 1}))
     }
 
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {

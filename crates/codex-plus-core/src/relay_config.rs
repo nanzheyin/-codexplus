@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{RelayContextSelection, RelayProfile, RelayProtocol};
+use crate::settings::{
+    BackendSettings, RelayContextSelection, RelayMode, RelayProfile, RelayProtocol,
+};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -746,6 +748,250 @@ pub fn backfill_relay_profile_from_home_with_common(
         }
     }
     Ok(())
+}
+
+pub fn apply_local_relay_profile_to_home(
+    home: &Path,
+    source_profile: &RelayProfile,
+    common_config_contents: &str,
+    port: u16,
+    local_api_key: &str,
+    preserve_computer_use_guard: bool,
+) -> anyhow::Result<RelayApplyResult> {
+    let local_api_key = local_api_key.trim();
+    if local_api_key.is_empty() {
+        anyhow::bail!("本地中转 API Key 不能为空");
+    }
+    let local_base_url = crate::protocol_proxy::local_responses_proxy_base_url(port);
+    let mut local_profile = source_profile.clone();
+    local_profile.id = crate::local_relay::LOCAL_RELAY_POOL_ID.to_string();
+    local_profile.name = "本地中转供应商池".to_string();
+    local_profile.config_contents = upsert_model_provider_config(
+        &source_profile.config_contents,
+        &local_base_url,
+        local_api_key,
+    )?;
+    local_profile.base_url = local_base_url.clone();
+    local_profile.upstream_base_url = local_base_url;
+    local_profile.api_key = local_api_key.to_string();
+    local_profile.protocol = RelayProtocol::Responses;
+    local_profile.relay_mode = crate::settings::RelayMode::PureApi;
+    local_profile.official_mix_api_key = false;
+    local_profile.auth_contents = serde_json::to_string_pretty(&json!({
+        "OPENAI_API_KEY": local_api_key
+    }))?;
+    apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
+        home,
+        &local_profile,
+        common_config_contents,
+        preserve_computer_use_guard,
+    )
+}
+
+/// 首次打开管理器时，把当前 Codex live 配置填入空的供应商槽位。
+///
+/// 该流程只读取 live 文件，不会写回 config.toml/auth.json；已有供应商配置也不会被覆盖。
+/// TOML 或 JSON 无效时静默跳过，避免把可能包含密钥的解析上下文带入日志。
+pub fn auto_import_live_relay_profile_from_home(
+    home: &Path,
+    settings: &mut BackendSettings,
+) -> anyhow::Result<bool> {
+    let target_index = match live_import_target_index(settings) {
+        Some(index) => index,
+        None => return Ok(false),
+    };
+    let existing_ids = settings
+        .relay_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<Vec<_>>();
+    let Some(mut imported) = live_relay_profile_from_home(home, &existing_ids)? else {
+        return Ok(false);
+    };
+
+    let active_id = if target_index < settings.relay_profiles.len() {
+        let current = &settings.relay_profiles[target_index];
+        imported.id = current.id.clone();
+        if !current.name.trim().is_empty() && current.name != RelayProfile::default().name {
+            imported.name = current.name.clone();
+        }
+        imported.context_selection = current.context_selection.clone();
+        imported.context_selection_initialized = current.context_selection_initialized;
+        let id = imported.id.clone();
+        settings.relay_profiles[target_index] = imported;
+        id
+    } else {
+        let id = imported.id.clone();
+        settings.relay_profiles.push(imported);
+        id
+    };
+
+    settings.active_relay_id = active_id;
+    Ok(true)
+}
+
+fn live_import_target_index(settings: &BackendSettings) -> Option<usize> {
+    if settings.relay_profiles.is_empty() {
+        return Some(0);
+    }
+
+    let active_index = settings
+        .relay_profiles
+        .iter()
+        .position(|profile| profile.id == settings.active_relay_id)
+        .or_else(|| (settings.relay_profiles.len() == 1).then_some(0))?;
+    relay_profile_is_empty_for_live_import(&settings.relay_profiles[active_index])
+        .then_some(active_index)
+}
+
+fn relay_profile_is_empty_for_live_import(profile: &RelayProfile) -> bool {
+    profile.config_contents.trim().is_empty()
+        && profile.auth_contents.trim().is_empty()
+        && profile.model.trim().is_empty()
+        && profile.model_list.trim().is_empty()
+        && profile.model_windows.trim().is_empty()
+        && profile.api_key.trim().is_empty()
+        && profile.base_url.trim().is_empty()
+        && profile.upstream_base_url.trim().is_empty()
+        && profile.test_model.trim().is_empty()
+        && profile.relay_mode == RelayMode::Official
+        && !profile.official_mix_api_key
+}
+
+fn live_relay_profile_from_home(
+    home: &Path,
+    existing_ids: &[&str],
+) -> anyhow::Result<Option<RelayProfile>> {
+    let config_contents = read_optional_text(&home.join("config.toml"))?;
+    if config_contents.trim().is_empty() {
+        return Ok(None);
+    }
+    let doc = match parse_toml_document(&config_contents) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None),
+    };
+    let Some(provider_id) = active_provider_id(&doc) else {
+        return Ok(None);
+    };
+    let Some(provider) = doc
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+    else {
+        return Ok(None);
+    };
+
+    let auth_contents = read_optional_text(&home.join("auth.json"))?;
+    let auth_value = if auth_contents.trim().is_empty() {
+        None
+    } else {
+        match serde_json::from_str::<Value>(&auth_contents) {
+            Ok(value) if value.is_object() => Some(value),
+            Ok(_) | Err(_) => return Ok(None),
+        }
+    };
+    let auth_api_key = auth_value
+        .as_ref()
+        .and_then(|value| value.get("OPENAI_API_KEY"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let bearer_token = provider
+        .get("experimental_bearer_token")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let api_key = auth_api_key.clone().or(bearer_token).unwrap_or_default();
+    let relay_mode = if auth_api_key.is_some() {
+        RelayMode::PureApi
+    } else {
+        RelayMode::Official
+    };
+    let protocol = provider
+        .get("wire_api")
+        .and_then(Item::as_str)
+        .map(relay_protocol_from_wire_api)
+        .unwrap_or(RelayProtocol::Responses);
+    let name = provider
+        .get("name")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(provider_id.as_str())
+        .to_string();
+    let base_url = provider
+        .get("base_url")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let model = doc
+        .get("model")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let id = unique_live_profile_id(&provider_id, existing_ids);
+
+    let mut profile = RelayProfile {
+        id,
+        name,
+        model,
+        base_url: base_url.clone(),
+        upstream_base_url: base_url,
+        api_key,
+        protocol,
+        relay_mode,
+        official_mix_api_key: auth_api_key.is_none(),
+        config_contents,
+        auth_contents,
+        use_common_config: false,
+        ..RelayProfile::default()
+    };
+    let live_config = profile.config_contents.clone();
+    sync_context_limits_from_config(&mut profile, &live_config);
+    Ok(Some(profile))
+}
+
+fn relay_protocol_from_wire_api(value: &str) -> RelayProtocol {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "chat" | "chat_completions" | "chat-completions" => RelayProtocol::ChatCompletions,
+        _ => RelayProtocol::Responses,
+    }
+}
+
+fn unique_live_profile_id(provider_id: &str, existing_ids: &[&str]) -> String {
+    let suffix = provider_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let suffix = suffix.trim_matches('-');
+    let base = if suffix.is_empty() {
+        "live-provider".to_string()
+    } else {
+        format!("live-{suffix}")
+    };
+    if !existing_ids.iter().any(|id| *id == base) {
+        return base;
+    }
+    for index in 2.. {
+        let candidate = format!("{base}-{index}");
+        if !existing_ids.iter().any(|id| *id == candidate) {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 pub fn extract_common_config_from_config(config_text: &str) -> anyhow::Result<String> {
@@ -2692,6 +2938,158 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_live_provider(home: &Path, auth: Option<&str>) -> (String, String) {
+        let config = "model_provider = \"acme\"\nmodel = \"acme-code\"\nmodel_context_window = 200000\nmodel_auto_compact_token_limit = 160000\n\n[model_providers.acme]\nname = \"Acme Code\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = \"https://api.acme.test/v1\"\n";
+        let auth = auth.unwrap_or_default().to_string();
+        std::fs::write(home.join("config.toml"), config).unwrap();
+        if !auth.is_empty() {
+            std::fs::write(home.join("auth.json"), &auth).unwrap();
+        }
+        (config.to_string(), auth)
+    }
+
+    #[test]
+    fn auto_import_live_relay_profile_fills_default_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let (config, auth) = write_live_provider(
+            temp.path(),
+            Some("{\n  \"OPENAI_API_KEY\": \"sk-live-secret\"\n}\n"),
+        );
+        let mut settings = BackendSettings::default();
+
+        let imported =
+            auto_import_live_relay_profile_from_home(temp.path(), &mut settings).unwrap();
+
+        assert!(imported);
+        assert_eq!(settings.relay_profiles.len(), 1);
+        let profile = &settings.relay_profiles[0];
+        assert_eq!(profile.id, "default");
+        assert_eq!(profile.name, "Acme Code");
+        assert_eq!(profile.model, "acme-code");
+        assert_eq!(profile.base_url, "https://api.acme.test/v1");
+        assert_eq!(profile.protocol, RelayProtocol::Responses);
+        assert_eq!(profile.relay_mode, RelayMode::PureApi);
+        assert!(!profile.official_mix_api_key);
+        assert!(!profile.use_common_config);
+        assert_eq!(profile.context_window, "200000");
+        assert_eq!(profile.auto_compact_limit, "160000");
+        assert_eq!(profile.config_contents, config);
+        assert_eq!(profile.auth_contents, auth);
+        assert_eq!(settings.active_relay_id, "default");
+    }
+
+    #[test]
+    fn auto_import_live_relay_profile_does_not_overwrite_existing_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        write_live_provider(temp.path(), Some("{\"OPENAI_API_KEY\":\"sk-live-secret\"}"));
+        let existing = RelayProfile {
+            id: "saved".to_string(),
+            name: "Saved Provider".to_string(),
+            relay_mode: RelayMode::PureApi,
+            config_contents: "model_provider = \"saved\"\n".to_string(),
+            auth_contents: "{\"OPENAI_API_KEY\":\"sk-saved\"}".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut settings = BackendSettings {
+            relay_profiles: vec![existing.clone()],
+            active_relay_id: existing.id.clone(),
+            ..BackendSettings::default()
+        };
+
+        let imported =
+            auto_import_live_relay_profile_from_home(temp.path(), &mut settings).unwrap();
+
+        assert!(!imported);
+        assert_eq!(settings.relay_profiles, vec![existing]);
+        assert_eq!(settings.active_relay_id, "saved");
+    }
+
+    #[test]
+    fn auto_import_live_relay_profile_allows_missing_auth_file() {
+        let temp = tempfile::tempdir().unwrap();
+        write_live_provider(temp.path(), None);
+        let mut settings = BackendSettings::default();
+
+        let imported =
+            auto_import_live_relay_profile_from_home(temp.path(), &mut settings).unwrap();
+
+        assert!(imported);
+        let profile = &settings.relay_profiles[0];
+        assert_eq!(profile.relay_mode, RelayMode::Official);
+        assert!(profile.official_mix_api_key);
+        assert!(profile.auth_contents.is_empty());
+    }
+
+    #[test]
+    fn auto_import_live_relay_profile_skips_missing_or_invalid_files() {
+        let missing = tempfile::tempdir().unwrap();
+        let mut missing_settings = BackendSettings::default();
+        assert!(
+            !auto_import_live_relay_profile_from_home(missing.path(), &mut missing_settings)
+                .unwrap()
+        );
+
+        let invalid_toml = tempfile::tempdir().unwrap();
+        std::fs::write(
+            invalid_toml.path().join("config.toml"),
+            "model_provider = [invalid\n",
+        )
+        .unwrap();
+        let mut invalid_toml_settings = BackendSettings::default();
+        assert!(
+            !auto_import_live_relay_profile_from_home(
+                invalid_toml.path(),
+                &mut invalid_toml_settings
+            )
+            .unwrap()
+        );
+
+        let invalid_json = tempfile::tempdir().unwrap();
+        write_live_provider(
+            invalid_json.path(),
+            Some("{\"OPENAI_API_KEY\":\"sk-must-not-leak\","),
+        );
+        let mut invalid_json_settings = BackendSettings::default();
+        let result = auto_import_live_relay_profile_from_home(
+            invalid_json.path(),
+            &mut invalid_json_settings,
+        );
+        assert_eq!(result.as_ref().ok(), Some(&false));
+        assert!(!format!("{result:?}").contains("sk-must-not-leak"));
+    }
+
+    #[test]
+    fn auto_import_live_relay_profile_only_fills_active_empty_slot() {
+        let temp = tempfile::tempdir().unwrap();
+        write_live_provider(temp.path(), Some("{\"OPENAI_API_KEY\":\"sk-live-secret\"}"));
+        let saved = RelayProfile {
+            id: "saved".to_string(),
+            name: "Saved Provider".to_string(),
+            relay_mode: RelayMode::PureApi,
+            config_contents: "model_provider = \"saved\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let empty = RelayProfile {
+            id: "empty-slot".to_string(),
+            name: "My Current Slot".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut settings = BackendSettings {
+            relay_profiles: vec![saved.clone(), empty],
+            active_relay_id: "empty-slot".to_string(),
+            ..BackendSettings::default()
+        };
+
+        let imported =
+            auto_import_live_relay_profile_from_home(temp.path(), &mut settings).unwrap();
+
+        assert!(imported);
+        assert_eq!(settings.relay_profiles[0], saved);
+        assert_eq!(settings.relay_profiles[1].id, "empty-slot");
+        assert_eq!(settings.relay_profiles[1].name, "My Current Slot");
+        assert_eq!(settings.relay_profiles[1].model, "acme-code");
+    }
 
     #[test]
     fn backfill_relay_profile_from_home_with_common_restores_template_provider_id() {

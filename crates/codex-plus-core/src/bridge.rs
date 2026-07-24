@@ -15,12 +15,48 @@ use tokio_tungstenite::tungstenite::Message;
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const BRIDGE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub type BridgeHandler = Arc<
     dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>
         + Send
         + Sync,
 >;
+
+#[derive(Debug)]
+pub struct BridgeRuntime {
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl BridgeRuntime {
+    pub async fn shutdown(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let mut task = task;
+            if tokio::time::timeout(BRIDGE_SHUTDOWN_TIMEOUT, &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+}
+
+impl Drop for BridgeRuntime {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
 
 static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(100);
 
@@ -140,7 +176,7 @@ pub async fn install_bridge(
     binding_name: &str,
     handler: BridgeHandler,
     new_document_scripts: &[String],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BridgeRuntime> {
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket).with_handler(handler);
 
@@ -188,19 +224,27 @@ pub async fn install_bridge(
     }
 
     session.drain_binding_queue().await?;
-    tokio::spawn(async move {
+    let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
         loop {
-            if session.drain_binding_queue().await.is_err() {
-                break;
-            }
-            match session.next_message().await {
+            let message = tokio::select! {
+                _ = &mut shutdown_rx => break,
+                message = session.next_message() => message,
+            };
+            match message {
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
+            }
+            if session.drain_binding_queue().await.is_err() {
+                break;
             }
         }
     });
 
-    Ok(())
+    Ok(BridgeRuntime {
+        shutdown: Some(shutdown),
+        task: Some(task),
+    })
 }
 
 pub fn runtime_evaluate_params(script: &str) -> Value {

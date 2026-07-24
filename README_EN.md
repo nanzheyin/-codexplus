@@ -170,7 +170,7 @@ If Codex++ helps you, you can support its continued maintenance.
 | Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, shared config, and per-provider MCP, Skill, and Plugin selection |
 | Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
-| Development workflow | Project move, Upstream worktree creation, thread IDs, and Zed Remote project discovery and opening |
+| Development workflow | Project move, Upstream worktree creation, and thread IDs |
 | Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
@@ -199,7 +199,7 @@ Provider switching saves the current profile before applying the target profile.
 - Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
 - Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
 - Stepwise suggestions with a separate API, model, item count, and timeout.
-- Upstream worktrees, Zed Remote, custom image overlays, and user scripts.
+- Upstream worktrees, custom image overlays, and user scripts.
 
 Settings that depend on renderer injection generally require saving and restarting Codex++.
 

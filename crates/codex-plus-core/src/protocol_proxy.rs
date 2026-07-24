@@ -511,7 +511,7 @@ pub async fn open_responses_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = effective_proxy_settings(SettingsStore::default().load().unwrap_or_default());
     open_responses_proxy_request_with_settings_and_user_agent(body, settings, original_user_agent)
         .await
 }
@@ -538,14 +538,44 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
         .unwrap_or(false);
     let context = RotationContext {
         conversation_id: conversation_id_from_responses_request(&request_json),
+        model: request_json
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToString::to_string),
     };
-    let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
+    let relay = crate::relay_rotation::select_relay_for_request(&settings, context.clone())?;
     let mut relays = vec![relay.clone()];
-    relays.extend(crate::relay_rotation::fallback_relays_after(
-        &settings, &relay.id,
+    relays.extend(crate::relay_rotation::fallback_relays_after_for_context(
+        &settings, &relay.id, &context,
     )?);
     let relay_count = relays.len();
-    for (attempt, relay) in relays.into_iter().enumerate() {
+    for (attempt, mut relay) in relays.into_iter().enumerate() {
+        let oauth_profile = crate::codex_oauth::is_oauth_profile(&relay);
+        if oauth_profile {
+            match crate::codex_oauth::prepare_oauth_profile(relay.clone(), false).await {
+                Ok((prepared, refreshed)) => {
+                    relay = prepared;
+                    if refreshed {
+                        let _ = crate::codex_oauth::persist_refreshed_profile(&relay);
+                    }
+                }
+                Err(error) => {
+                    crate::relay_rotation::record_relay_request_result(
+                        &settings,
+                        Some(&relay.id),
+                        &context,
+                        RotationEvent::Failure,
+                    );
+                    if attempt + 1 < relay_count {
+                        continue;
+                    }
+                    return Err(error)
+                        .with_context(|| format!("OAuth 供应商「{}」凭据不可用", relay.name));
+                }
+            }
+        }
         validate_upstream(&relay)?;
         let upstream_user_agent = effective_user_agent(&relay.user_agent, original_user_agent);
         let (supports_image, body_with_vl) = apply_vl_with_fallback(
@@ -572,51 +602,90 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 "headerTimeoutSeconds": header_timeout.as_secs()
             }),
         );
-        let upstream = match send_upstream_request_for_responses(
-            upstream_request_builder(
+        let send_request = |relay: &crate::settings::RelayProfile| -> anyhow::Result<_> {
+            Ok(upstream_request_builder(
                 crate::http_client::proxied_client(&effective_user_agent(
                     &relay.user_agent,
                     original_user_agent,
                 ))?,
                 &endpoint,
-                relay.api_key.trim(),
+                relay,
                 is_stream,
                 &upstream_body,
-            ),
-            is_stream,
-        )
-        .await
-        {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "protocol_proxy.upstream_request_failed",
-                    json!({
-                        "relayId": relay.id,
-                        "relayName": relay.name,
-                        "endpoint": endpoint,
-                        "wireApi": wire_api,
-                        "stream": is_stream,
-                        "attempt": attempt + 1,
-                        "candidateCount": relay_count,
-                        "headerTimeoutSeconds": header_timeout.as_secs(),
-                        "willFailover": has_more_candidates,
-                        "error": error.to_string()
-                    }),
-                );
-                crate::relay_rotation::record_relay_request_failure(&settings);
-                if has_more_candidates {
-                    continue;
-                }
-                return Err(error).with_context(|| {
-                    format!(
-                        "供应商「{}」请求上游失败，endpoint: {}",
-                        relay.name, endpoint
-                    )
-                });
-            }
+            ))
         };
-        let status_code = upstream.status().as_u16();
+        let upstream =
+            match send_upstream_request_for_responses(send_request(&relay)?, is_stream).await {
+                Ok(upstream) => upstream,
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.upstream_request_failed",
+                        json!({
+                            "relayId": relay.id,
+                            "relayName": relay.name,
+                            "endpoint": endpoint,
+                            "wireApi": wire_api,
+                            "stream": is_stream,
+                            "attempt": attempt + 1,
+                            "candidateCount": relay_count,
+                            "headerTimeoutSeconds": header_timeout.as_secs(),
+                            "willFailover": has_more_candidates,
+                            "error": error.to_string()
+                        }),
+                    );
+                    crate::relay_rotation::record_relay_request_result(
+                        &settings,
+                        Some(&relay.id),
+                        &context,
+                        RotationEvent::Failure,
+                    );
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "供应商「{}」请求上游失败，endpoint: {}",
+                            relay.name, endpoint
+                        )
+                    });
+                }
+            };
+        let mut upstream = upstream;
+        let mut status_code = upstream.status().as_u16();
+        if status_code == 401 && oauth_profile {
+            match crate::codex_oauth::prepare_oauth_profile(relay.clone(), true).await {
+                Ok((prepared, _)) => {
+                    relay = prepared;
+                    let _ = crate::codex_oauth::persist_refreshed_profile(&relay);
+                    match send_upstream_request_for_responses(send_request(&relay)?, is_stream)
+                        .await
+                    {
+                        Ok(retried) => {
+                            upstream = retried;
+                            status_code = upstream.status().as_u16();
+                        }
+                        Err(error) => {
+                            crate::relay_rotation::record_relay_request_result(
+                                &settings,
+                                Some(&relay.id),
+                                &context,
+                                RotationEvent::Failure,
+                            );
+                            if has_more_candidates {
+                                continue;
+                            }
+                            return Err(error).context("OAuth Token 刷新后重试失败");
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "protocol_proxy.oauth_refresh_failed",
+                        json!({ "relayId": relay.id, "error": error.to_string() }),
+                    );
+                }
+            }
+        }
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "protocol_proxy.upstream_response",
             json!({
@@ -629,11 +698,13 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 "attempt": attempt + 1,
                 "candidateCount": relay_count,
                 "headerTimeoutSeconds": header_timeout.as_secs(),
-                "willFailover": has_more_candidates && !(200..300).contains(&status_code)
+                "willFailover": has_more_candidates && should_failover_status(status_code)
             }),
         );
-        crate::relay_rotation::record_relay_request_event(
+        crate::relay_rotation::record_relay_request_result(
             &settings,
+            Some(&relay.id),
+            &context,
             if (200..300).contains(&status_code) {
                 RotationEvent::Success
             } else {
@@ -646,7 +717,10 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             .and_then(|value| value.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if (200..300).contains(&status_code) || !has_more_candidates {
+        if (200..300).contains(&status_code)
+            || !has_more_candidates
+            || !should_failover_status(status_code)
+        {
             return Ok(UpstreamProxyResponse {
                 status_code,
                 is_stream: is_stream || content_type.contains("text/event-stream"),
@@ -676,8 +750,15 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
 pub async fn open_models_proxy_request(
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    let settings = effective_proxy_settings(SettingsStore::default().load().unwrap_or_default());
+    let mut relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    if crate::codex_oauth::is_oauth_profile(&relay) {
+        let (prepared, refreshed) = crate::codex_oauth::prepare_oauth_profile(relay, false).await?;
+        relay = prepared;
+        if refreshed {
+            let _ = crate::codex_oauth::persist_refreshed_profile(&relay);
+        }
+    }
     validate_upstream(&relay)?;
 
     let endpoint = models_url(&relay.base_url);
@@ -690,15 +771,14 @@ pub async fn open_models_proxy_request(
             "wireApi": UpstreamWireApi::Responses
         }),
     );
-    let upstream = send_upstream_request(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .get(endpoint)
-        .bearer_auth(relay.api_key.trim()),
-    )
-    .await?;
+    let mut request = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?
+    .get(endpoint)
+    .bearer_auth(relay.api_key.trim());
+    request = apply_oauth_request_headers(request, &relay);
+    let upstream = send_upstream_request(request).await?;
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -805,20 +885,50 @@ pub fn upstream_request_parts_with_image_decision(
 fn upstream_request_builder(
     client: reqwest::Client,
     endpoint: &str,
-    api_key: &str,
+    relay: &crate::settings::RelayProfile,
     is_stream: bool,
     upstream_body: &Value,
 ) -> reqwest::RequestBuilder {
     let mut builder = client
         .post(endpoint)
-        .bearer_auth(api_key)
+        .bearer_auth(relay.api_key.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    builder = apply_oauth_request_headers(builder, relay);
     if is_stream {
         builder = builder
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .header(reqwest::header::CACHE_CONTROL, "no-cache");
     }
     builder.json(upstream_body)
+}
+
+fn apply_oauth_request_headers(
+    mut builder: reqwest::RequestBuilder,
+    relay: &crate::settings::RelayProfile,
+) -> reqwest::RequestBuilder {
+    if !crate::codex_oauth::is_oauth_profile(relay) {
+        return builder;
+    }
+    builder = builder.header("Originator", "codex_cli_rs");
+    if let Some(account_id) =
+        crate::codex_oauth::chatgpt_account_id_from_access_token(relay.api_key.trim())
+    {
+        builder = builder.header("Chatgpt-Account-Id", account_id);
+    }
+    builder
+}
+
+fn effective_proxy_settings(
+    settings: crate::settings::BackendSettings,
+) -> crate::settings::BackendSettings {
+    let Ok(local) = crate::local_relay::LocalRelaySettings::load() else {
+        return settings;
+    };
+    crate::local_relay::settings_with_local_pool(settings, &local)
+}
+
+fn should_failover_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 404 | 408 | 409 | 425 | 429) || status >= 500
 }
 
 fn validate_upstream(relay: &crate::settings::RelayProfile) -> anyhow::Result<()> {

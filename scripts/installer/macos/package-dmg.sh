@@ -7,16 +7,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
 BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
-DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
+DMG="$DIST/CodexDeck-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
-ICON_NAME="codex-plus-plus.icns"
+ICON_NAME="codex-deck.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
 
 rm -rf "$DIST"
 mkdir -p "$STAGE"
 
 prepare_icon() {
-  local iconset="$DIST/codex-plus-plus.iconset"
+  local iconset="$DIST/codex-deck.iconset"
   rm -rf "$iconset"
   mkdir -p "$iconset"
 
@@ -120,7 +120,7 @@ verify_app() {
 create_dmg() {
   local attempt
   for attempt in 1 2 3; do
-    if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
+    if hdiutil create -volname "Codex Deck" -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
       return 0
     fi
     if [ "$attempt" -eq 3 ]; then
@@ -134,14 +134,14 @@ create_dmg() {
 }
 
 prepare_icon
-create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
-create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+create_app "Codex Deck" "CodexDeck" "$BINARY_DIR/codex-deck" "io.github.nanzheyin.codexdeck" "true"
+create_app "Codex Deck 管理工具" "CodexDeckManager" "$BINARY_DIR/codex-deck-manager" "io.github.nanzheyin.codexdeck.manager" "false"
 
-sign_app "$STAGE/Codex++.app"
-sign_app "$STAGE/Codex++ 管理工具.app"
+sign_app "$STAGE/Codex Deck.app"
+sign_app "$STAGE/Codex Deck 管理工具.app"
 
-verify_app "$STAGE/Codex++.app"
-verify_app "$STAGE/Codex++ 管理工具.app"
+verify_app "$STAGE/Codex Deck.app"
+verify_app "$STAGE/Codex Deck 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 

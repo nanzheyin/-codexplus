@@ -113,6 +113,62 @@ base_url = "https://edited-a.example/v1"
 }
 
 #[test]
+fn switch_preserves_unknown_settings_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model = "edited-live-model"
+model_provider = "manual_a"
+
+[model_providers.manual_a]
+name = "manual_a"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://edited-a.example/v1"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{"OPENAI_API_KEY":"sk-edited-a"}"#,
+    )
+    .unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let original = serde_json::json!({
+        "activeRelayId": "a",
+        "relayProfiles": serde_json::to_value(vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("b", "https://b.example/v1", "sk-b"),
+        ]).unwrap(),
+        "customField": {"nested": true}
+    });
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_string_pretty(&original).unwrap(),
+    )
+    .unwrap();
+    let next = BackendSettings {
+        active_relay_id: "b".to_string(),
+        relay_profiles: vec![
+            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("b", "https://b.example/v1", "sk-b"),
+        ],
+        ..BackendSettings::default()
+    };
+
+    switch_relay_profile_in_home(&store, &home, next, "a").unwrap();
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("settings.json")).unwrap())
+            .unwrap();
+
+    assert_eq!(raw["customField"], serde_json::json!({"nested": true}));
+    assert_eq!(raw["activeRelayId"], serde_json::json!("b"));
+}
+
+#[test]
 fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");

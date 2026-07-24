@@ -35,7 +35,7 @@ pub fn run() {
             };
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("Codex++ 管理工具")
+                    .title(codex_plus_core::product_identity::MANAGER_NAME)
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -44,6 +44,7 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
             register_main_window_events(main_window);
+            tauri::async_runtime::spawn(commands::start_local_relay_if_enabled());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -59,10 +60,11 @@ pub fn run() {
             commands::load_pending_provider_import,
             commands::confirm_pending_provider_import,
             commands::dismiss_pending_provider_import,
+            commands::preview_legacy_import,
+            commands::prepare_legacy_import_transaction,
+            commands::apply_legacy_import_transaction,
+            commands::rollback_legacy_import_transaction,
             commands::list_local_sessions,
-            commands::list_zed_remote_projects,
-            commands::open_zed_remote,
-            commands::forget_zed_remote_project,
             commands::delete_local_session,
             commands::load_provider_sync_targets,
             commands::preview_session_index_cleanup,
@@ -113,6 +115,13 @@ pub fn run() {
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,
+            commands::local_relay_status,
+            commands::start_local_relay,
+            commands::stop_local_relay,
+            commands::regenerate_local_relay_key,
+            commands::start_codex_oauth_login,
+            commands::poll_codex_oauth_login,
+            commands::import_local_codex_oauth,
             manager_exit_app,
             manager_hide_to_tray,
             update_tray_labels

@@ -1,5 +1,3 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 use anyhow::{Context, Result};
 use codex_plus_core::launcher::{
     DefaultLaunchHooks, LaunchHooks, LaunchOptions, launch_and_inject_with_hooks,
@@ -45,8 +43,26 @@ impl LauncherHooks {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    run()
+}
+
+pub fn run() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("创建 Codex 启动运行时失败")?
+        .block_on(run_async())
+}
+
+async fn run_async() -> Result<()> {
+    let migration = codex_plus_core::paths::migrate_legacy_app_state_if_needed().ok();
+    if let Some(report) = migration.filter(|report| report.migrated()) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.legacy_state_migrated",
+            json!({ "copied_files": report.copied_files }),
+        );
+    }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let helper_only = args.iter().any(|arg| arg == "--helper-only");
     let options = parse_launch_options(args.iter());
@@ -407,6 +423,7 @@ impl LaunchHooks for LauncherHooks {
 
     async fn shutdown_helper(&self, helper_port: u16) {
         self.core.shutdown_helper(helper_port).await;
+        self.runtime.shutdown_bridge().await;
     }
 
     async fn terminate_codex(&self, launch: &codex_plus_core::launcher::CodexLaunch) {
@@ -538,6 +555,8 @@ impl LauncherDataService {
 struct LauncherRuntimeService {
     debug_port: Mutex<u16>,
     websocket_url: Mutex<Option<String>>,
+    bridge_install_lock: tokio::sync::Mutex<()>,
+    bridge_runtime: tokio::sync::Mutex<Option<codex_plus_core::bridge::BridgeRuntime>>,
     user_scripts: UserScriptManager,
     user_script_snapshot: Mutex<Option<codex_plus_core::user_scripts::UserScriptSnapshot>>,
     user_script_hot_reload_started: AtomicBool,
@@ -548,6 +567,8 @@ impl LauncherRuntimeService {
         Self {
             debug_port: Mutex::new(debug_port),
             websocket_url: Mutex::new(None),
+            bridge_install_lock: tokio::sync::Mutex::new(()),
+            bridge_runtime: tokio::sync::Mutex::new(None),
             user_scripts,
             user_script_snapshot: Mutex::new(None),
             user_script_hot_reload_started: AtomicBool::new(false),
@@ -560,6 +581,19 @@ impl LauncherRuntimeService {
 
     fn set_websocket_url(&self, websocket_url: &str) {
         *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
+    }
+
+    async fn replace_bridge_runtime(&self, runtime: codex_plus_core::bridge::BridgeRuntime) {
+        let old_runtime = self.bridge_runtime.lock().await.replace(runtime);
+        if let Some(old_runtime) = old_runtime {
+            old_runtime.shutdown().await;
+        }
+    }
+
+    async fn shutdown_bridge(&self) {
+        if let Some(runtime) = self.bridge_runtime.lock().await.take() {
+            runtime.shutdown().await;
+        }
     }
 
     async fn reload_user_scripts_now(&self) -> anyhow::Result<Value> {
@@ -699,38 +733,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::ads::fetch_ad_list().await
     }
 
-    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::zed_remote_status())
-    }
-
-    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::resolve_ssh_target_response(
-            &payload,
-        ))
-    }
-
-    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::fallback_open_request_response(
-            &payload,
-        ))
-    }
-
-    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
-    }
-
-    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::list_zed_remote_projects_response(&payload))
-    }
-
-    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::remember_zed_remote_project_response(&payload))
-    }
-
-    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::forget_zed_remote_project_response(&payload))
-    }
-
     async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
         Ok(codex_plus_core::upstream_worktree::status_response())
     }
@@ -779,13 +781,13 @@ async fn try_inject_with_context(
     ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
+    let _install_guard = runtime.bridge_install_lock.lock().await;
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
     let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    runtime.set_websocket_url(websocket_url);
     let settings = codex_plus_core::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
@@ -799,7 +801,7 @@ async fn try_inject_with_context(
     } else {
         vec![script, user_bundle]
     };
-    codex_plus_core::bridge::install_bridge(
+    let bridge_runtime = codex_plus_core::bridge::install_bridge(
         websocket_url,
         codex_plus_core::bridge::BRIDGE_BINDING_NAME,
         Arc::new(move |path, payload| {
@@ -811,6 +813,8 @@ async fn try_inject_with_context(
         &new_document_scripts,
     )
     .await?;
+    runtime.set_websocket_url(websocket_url);
+    runtime.replace_bridge_runtime(bridge_runtime).await;
     if should_start_user_script_hot_reload(&settings) {
         runtime.remember_user_script_snapshot();
         runtime.start_user_script_hot_reload_watchdog();

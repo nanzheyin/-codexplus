@@ -1,8 +1,9 @@
 use codex_plus_core::codex_sqlite::codex_session_db_path_from_home;
 use codex_plus_core::relay_config::{
-    apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
-    apply_relay_files_to_home, apply_relay_files_to_home_with_common,
-    apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
+    apply_local_relay_profile_to_home, apply_pure_api_config_to_home,
+    apply_relay_config_file_to_home, apply_relay_config_to_home, apply_relay_files_to_home,
+    apply_relay_files_to_home_with_common, apply_relay_profile_files_to_home_with_context,
+    apply_relay_profile_to_home_with_switch_rules,
     apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, clear_relay_config_to_home,
@@ -393,6 +394,43 @@ base_url = "https://responses.example.test/v1"
         codex_plus_core::relay_config::relay_profile_base_url(&backfilled),
         "https://responses.example.test/v1"
     );
+}
+
+#[test]
+fn local_relay_profile_overrides_source_snapshot_with_local_endpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        config_contents: r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://responses.example.test/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-source"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    let result =
+        apply_local_relay_profile_to_home(temp.path(), &source, "", 57322, "cdx-local-test", false)
+            .unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .unwrap();
+
+    assert!(result.configured);
+    assert!(config.contains(r#"model = "gpt-5.6-sol""#));
+    assert!(config.contains(r#"base_url = "http://127.0.0.1:57322/v1""#));
+    assert!(!config.contains("https://responses.example.test/v1"));
+    assert!(!config.contains("cdx-local-test"));
+    assert_eq!(auth["OPENAI_API_KEY"], "cdx-local-test");
 }
 
 #[test]

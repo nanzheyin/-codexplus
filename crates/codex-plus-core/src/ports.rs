@@ -5,8 +5,8 @@ use std::sync::{Mutex, OnceLock};
 
 use fs2::FileExt;
 
-pub const LAUNCHER_GUARD_PORT_BASE: u16 = 57320;
-pub const MANAGER_GUARD_PORT_BASE: u16 = 57319;
+pub const LAUNCHER_GUARD_PORT_BASE: u16 = 58320;
+pub const MANAGER_GUARD_PORT_BASE: u16 = 58319;
 
 /// Offset applied to guard port base to avoid conflicts in multi-user
 /// environments (Windows RDP, shared servers, etc.).

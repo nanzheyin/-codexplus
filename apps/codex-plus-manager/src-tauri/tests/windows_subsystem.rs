@@ -63,7 +63,7 @@ fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
     let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("read manager main.rs");
 
-    assert!(main_rs.contains("codexplusplus://"));
+    assert!(main_rs.contains("codexdeck://"));
     assert!(main_rs.contains("provider_import::save_pending_provider_import_from_url"));
     assert!(!main_rs.contains("provider_import::import_provider_from_url"));
     assert!(main_rs.contains("manager.provider_import_url.pending"));
@@ -124,7 +124,7 @@ fn windows_entrypoints_register_codexplusplus_url_protocol() {
     let windows_install =
         std::fs::read_to_string(&windows_install).expect("read windows install source");
 
-    assert!(windows_install.contains("Software\\Classes\\codexplusplus"));
+    assert!(windows_install.contains("Software\\Classes\\codexdeck"));
     assert!(windows_install.contains("URL Protocol"));
     assert!(windows_install.contains("%1"));
 }
@@ -154,12 +154,12 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("<key>LSUIElement</key>"));
     assert!(script.contains("ARCH=\"${2:-$(uname -m)}\""));
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
-    assert!(script.contains("CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"));
+    assert!(script.contains("CodexDeck-${VERSION}-macos-${ARCH}.dmg"));
     assert!(script.contains(
-        "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"true\""
+        "create_app \"Codex Deck\" \"CodexDeck\" \"$BINARY_DIR/codex-deck\" \"io.github.nanzheyin.codexdeck\" \"true\""
     ));
     assert!(script.contains(
-        "create_app \"Codex++ 管理工具\" \"CodexPlusPlusManager\" \"$BINARY_DIR/codex-plus-plus-manager\" \"com.bigpizzav3.codexplusplus.manager\" \"false\""
+        "create_app \"Codex Deck 管理工具\" \"CodexDeckManager\" \"$BINARY_DIR/codex-deck-manager\" \"io.github.nanzheyin.codexdeck.manager\" \"false\""
     ));
 }
 
@@ -422,6 +422,81 @@ fn manager_ui_no_longer_exposes_command_wrapper_or_startup_marketplace_prompt() 
     assert!(!app_tsx.contains("修复后端"));
     assert!(!app_tsx.contains("repairBackend"));
     assert!(!app_tsx.contains("await checkPluginMarketplacePrompt()"));
+}
+
+#[test]
+fn manager_relay_profile_list_supports_create_edit_delete_select_and_sort() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("createNewAggregateProfile"));
+    assert!(app_tsx.contains("onClick={createNewAggregateProfile}"));
+    assert!(app_tsx.contains("relay-profile-list"));
+    assert!(app_tsx.contains("relay-use-button"));
+    assert!(app_tsx.contains("active ? t(\"当前正在使用\") : t(\"设为当前\")"));
+    assert!(app_tsx.contains("aria-label={t(\"编辑\")}"));
+    assert!(app_tsx.contains("aria-label={t(\"复制\")}"));
+    assert!(app_tsx.contains("aria-label={t(\"删除供应商\")}"));
+    assert!(app_tsx.contains("aria-label={t(\"拖动排序\")}"));
+}
+
+#[test]
+fn manager_ui_exposes_plugin_marketplace_status_and_remote_cache_actions() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let lib_rs =
+        std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
+
+    assert!(app_tsx.contains("plugin_marketplace_status"));
+    assert!(app_tsx.contains("repair_plugin_marketplace"));
+    assert!(app_tsx.contains("remote_plugin_marketplace_status"));
+    assert!(app_tsx.contains("repair_remote_plugin_marketplace"));
+    assert!(app_tsx.contains("释放并注册内置缓存"));
+    assert!(app_tsx.contains("官方远端插件缓存进度"));
+    assert!(lib_rs.contains("commands::plugin_marketplace_status"));
+    assert!(lib_rs.contains("commands::repair_plugin_marketplace"));
+    assert!(lib_rs.contains("commands::remote_plugin_marketplace_status"));
+    assert!(lib_rs.contains("commands::repair_remote_plugin_marketplace"));
+}
+
+#[test]
+fn manager_maintenance_route_exposes_legacy_import_transaction_flow() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    let lib_rs =
+        std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
+
+    assert!(app_tsx.contains("legacyImport"));
+    assert!(app_tsx.contains("Legacy 导入"));
+    assert!(app_tsx.contains("preview_legacy_import"));
+    assert!(app_tsx.contains("prepare_legacy_import_transaction"));
+    assert!(app_tsx.contains("apply_legacy_import_transaction"));
+    assert!(app_tsx.contains("rollback_legacy_import_transaction"));
+    assert!(lib_rs.contains("commands::preview_legacy_import"));
+    assert!(lib_rs.contains("commands::prepare_legacy_import_transaction"));
+    assert!(lib_rs.contains("commands::apply_legacy_import_transaction"));
+    assert!(lib_rs.contains("commands::rollback_legacy_import_transaction"));
+}
+
+#[test]
+fn manager_sessions_route_exposes_search_filter_pagination_and_cleanup_actions() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    assert!(app_tsx.contains("route === \"sessions\""));
+    assert!(app_tsx.contains("list_local_sessions"));
+    assert!(app_tsx.contains("sessionSearch"));
+    assert!(app_tsx.contains("sessionFilter"));
+    assert!(app_tsx.contains("sessionSort"));
+    assert!(app_tsx.contains("sessionPageSize"));
+    assert!(app_tsx.contains("preview_session_index_cleanup"));
+    assert!(app_tsx.contains("apply_session_index_cleanup"));
+    assert!(app_tsx.contains("delete_local_session"));
+    assert!(app_tsx.contains("删除已选"));
 }
 
 #[test]

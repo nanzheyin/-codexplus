@@ -34,7 +34,7 @@ pub fn switch_relay_profile_in_home(
     }
 
     store
-        .save(&selected_settings)
+        .update(serde_json::to_value(&selected_settings)?)
         .context("保存供应商设置失败")?;
     let selected_settings = store.load().context("读取供应商设置失败")?;
 
@@ -44,7 +44,7 @@ pub fn switch_relay_profile_in_home(
             Ok(result)
         }
         Err(error) => {
-            let _ = store.save(&original_settings);
+            let _ = store.update(serde_json::to_value(&original_settings)?);
             Err(error)
         }
     }

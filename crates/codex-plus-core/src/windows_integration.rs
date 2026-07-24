@@ -514,11 +514,11 @@ fn apply_taskbar_properties(hwnd: HWND, icon_resource_path: &PathBuf) -> anyhow:
     let relaunch_command = std::env::current_exe()
         .ok()
         .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| "codex-plus-plus.exe".to_string());
+        .unwrap_or_else(|| "codex-deck.exe".to_string());
     set_property_string(
         &store,
         &PKEY_AppUserModel_ID,
-        "com.bigpizzav3.codexplusplus.codex",
+        crate::product_identity::WINDOWS_APP_USER_MODEL_ID,
     )?;
     set_property_string(
         &store,
@@ -528,7 +528,7 @@ fn apply_taskbar_properties(hwnd: HWND, icon_resource_path: &PathBuf) -> anyhow:
     set_property_string(
         &store,
         &PKEY_AppUserModel_RelaunchDisplayNameResource,
-        "Codex++",
+        crate::product_identity::PRODUCT_NAME,
     )?;
     set_property_string(
         &store,

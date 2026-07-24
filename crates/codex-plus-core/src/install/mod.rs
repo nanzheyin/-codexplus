@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 pub mod macos;
 pub mod windows;
 
-pub const SILENT_NAME: &str = "Codex++";
-pub const MANAGER_NAME: &str = "Codex++ 管理工具";
-pub const SILENT_BINARY: &str = "codex-plus-plus";
-pub const MANAGER_BINARY: &str = "codex-plus-plus-manager";
+pub const SILENT_NAME: &str = crate::product_identity::PRODUCT_NAME;
+pub const MANAGER_NAME: &str = crate::product_identity::MANAGER_NAME;
+pub const SILENT_BINARY: &str = crate::product_identity::LAUNCHER_BINARY;
+pub const MANAGER_BINARY: &str = crate::product_identity::MANAGER_BINARY;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -72,11 +72,11 @@ impl ShortcutState {
 }
 
 pub fn shortcut_names() -> (&'static str, &'static str) {
-    ("Codex++.lnk", "Codex++ 管理工具.lnk")
+    ("Codex Deck.lnk", "Codex Deck.lnk")
 }
 
 pub fn app_bundle_names() -> (&'static str, &'static str) {
-    ("Codex++.app", "Codex++ 管理工具.app")
+    ("Codex Deck.app", "Codex Deck 管理工具.app")
 }
 
 pub fn inspect_entrypoints() -> EntryPointState {
@@ -177,7 +177,7 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持安装 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持安装 Codex Deck 入口")
     }
 }
 
@@ -195,7 +195,7 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持卸载 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持卸载 Codex Deck 入口")
     }
 }
 
@@ -217,11 +217,11 @@ fn action_result(result: anyhow::Result<()>, success_message: &str) -> InstallAc
     }
 }
 
-fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf> {
+fn entrypoint_candidates(root: &Option<PathBuf>, _manager: bool) -> Vec<PathBuf> {
     let Some(root) = root else {
         return Vec::new();
     };
-    let name = if manager { MANAGER_NAME } else { SILENT_NAME };
+    let name = SILENT_NAME;
     if cfg!(windows) {
         vec![root.join(format!("{name}.lnk"))]
     } else if cfg!(target_os = "macos") {
@@ -264,7 +264,7 @@ fn macos_companion_binary_from_exe(exe: &Path, binary: &str) -> Option<PathBuf> 
             return Some(macos_preferred_bundle_binary(
                 exe,
                 SILENT_BINARY,
-                "CodexPlusPlus",
+                "CodexDeck",
             ));
         }
         let macos = applications_dir
@@ -276,7 +276,7 @@ fn macos_companion_binary_from_exe(exe: &Path, binary: &str) -> Option<PathBuf> 
                 .join(SILENT_BINARY)
                 .exists()
                 .then(|| macos.join(SILENT_BINARY))
-                .unwrap_or_else(|| macos.join("CodexPlusPlus")),
+                .unwrap_or_else(|| macos.join("CodexDeck")),
         );
     }
     if binary == MANAGER_BINARY {
@@ -284,7 +284,7 @@ fn macos_companion_binary_from_exe(exe: &Path, binary: &str) -> Option<PathBuf> 
             return Some(macos_preferred_bundle_binary(
                 exe,
                 MANAGER_BINARY,
-                "CodexPlusPlusManager",
+                "CodexDeckManager",
             ));
         }
         let macos = applications_dir
@@ -296,7 +296,7 @@ fn macos_companion_binary_from_exe(exe: &Path, binary: &str) -> Option<PathBuf> 
                 .join(MANAGER_BINARY)
                 .exists()
                 .then(|| macos.join(MANAGER_BINARY))
-                .unwrap_or_else(|| macos.join("CodexPlusPlusManager")),
+                .unwrap_or_else(|| macos.join("CodexDeckManager")),
         );
     }
     None

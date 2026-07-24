@@ -6,10 +6,10 @@
 !endif
 !define ROOT "..\..\.."
 
-Name "Codex++"
-OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
-InstallDir "$LOCALAPPDATA\Programs\Codex++"
-InstallDirRegKey HKCU "Software\Codex++" "InstallDir"
+Name "Codex Deck"
+OutFile "${ROOT}\dist\windows\CodexDeck-${VERSION}-windows-x64-setup.exe"
+InstallDir "$LOCALAPPDATA\Programs\Codex Deck"
+InstallDirRegKey HKCU "Software\CodexDeck" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
@@ -28,54 +28,51 @@ SetCompressor /SOLID lzma
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  nsExec::ExecToLog 'taskkill /IM codex-plus-plus.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codex-deck.exe /F'
   Pop $0
-  nsExec::ExecToLog 'taskkill /IM codex-plus-plus-manager.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codex-deck-manager.exe /F'
   Pop $0
+  Delete "$DESKTOP\Codex Deck 管理工具.lnk"
+  Delete "$SMPROGRAMS\Codex Deck\Codex Deck 管理工具.lnk"
 
-  File "${ROOT}\dist\windows\app\codex-plus-plus.exe"
-  File "${ROOT}\dist\windows\app\codex-plus-plus-manager.exe"
+  File "${ROOT}\dist\windows\app\codex-deck.exe"
+  Delete "$INSTDIR\codex-deck-manager.exe"
 
-  Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\Codex++\Codex++ 绠＄悊宸ュ叿.lnk"
-
-  CreateShortcut "$DESKTOP\Codex++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
-  CreateShortcut "$DESKTOP\Codex++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
-  CreateDirectory "$SMPROGRAMS\Codex++"
-  CreateShortcut "$SMPROGRAMS\Codex++\Codex++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
-  CreateShortcut "$SMPROGRAMS\Codex++\Codex++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
-  CreateShortcut "$SMPROGRAMS\Codex++\卸载 Codex++.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
+  CreateShortcut "$DESKTOP\Codex Deck.lnk" "$INSTDIR\codex-deck.exe" "" "$INSTDIR\codex-deck.exe"
+  CreateDirectory "$SMPROGRAMS\Codex Deck"
+  CreateShortcut "$SMPROGRAMS\Codex Deck\Codex Deck.lnk" "$INSTDIR\codex-deck.exe" "" "$INSTDIR\codex-deck.exe"
+  CreateShortcut "$SMPROGRAMS\Codex Deck\卸载 Codex Deck.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\codex-deck.exe"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  WriteRegStr HKCU "Software\Codex++" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayName" "Codex++"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "Publisher" "BigPizzaV3"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "DisplayIcon" "$INSTDIR\codex-plus-plus-manager.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegStr HKCU "Software\CodexDeck" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "DisplayName" "Codex Deck"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "Publisher" "nanzheyin"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "DisplayIcon" "$INSTDIR\codex-deck.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegStr HKCU "Software\Classes\codexdeck" "" "URL:Codex Deck Import Protocol"
+  WriteRegStr HKCU "Software\Classes\codexdeck" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\codexdeck\shell\open\command" "" '"$INSTDIR\codex-deck.exe" "%1"'
 SectionEnd
 
 Section "Uninstall"
-  nsExec::ExecToLog 'taskkill /IM codex-plus-plus.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codex-deck.exe /F'
   Pop $0
-  nsExec::ExecToLog 'taskkill /IM codex-plus-plus-manager.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codex-deck-manager.exe /F'
   Pop $0
 
-  Delete "$DESKTOP\Codex++.lnk"
-  Delete "$DESKTOP\Codex++ 管理工具.lnk"
-  Delete "$DESKTOP\Codex++ 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\Codex++\Codex++.lnk"
-  Delete "$SMPROGRAMS\Codex++\Codex++ 管理工具.lnk"
-  Delete "$SMPROGRAMS\Codex++\Codex++ 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\Codex++\卸载 Codex++.lnk"
-  RMDir "$SMPROGRAMS\Codex++"
+  Delete "$DESKTOP\Codex Deck.lnk"
+  Delete "$SMPROGRAMS\Codex Deck\Codex Deck.lnk"
+  Delete "$SMPROGRAMS\Codex Deck\卸载 Codex Deck.lnk"
+  RMDir "$SMPROGRAMS\Codex Deck"
 
-  Delete "$INSTDIR\codex-plus-plus.exe"
-  Delete "$INSTDIR\codex-plus-plus-manager.exe"
+  Delete "$INSTDIR\codex-deck.exe"
+  Delete "$INSTDIR\codex-deck-manager.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex++"
-  DeleteRegKey HKCU "Software\Codex++"
+  DeleteRegKey HKCU "Software\Classes\codexdeck"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck"
+  DeleteRegKey HKCU "Software\CodexDeck"
 SectionEnd

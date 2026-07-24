@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "codex-plus-plus"
+name = "codex-deck-launcher"
 path = "src/main.rs"
 
 [dependencies]
