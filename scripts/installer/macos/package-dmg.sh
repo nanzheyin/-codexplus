@@ -134,14 +134,11 @@ create_dmg() {
 }
 
 prepare_icon
-create_app "Codex Deck" "CodexDeck" "$BINARY_DIR/codex-deck" "io.github.nanzheyin.codexdeck" "true"
-create_app "Codex Deck 管理工具" "CodexDeckManager" "$BINARY_DIR/codex-deck-manager" "io.github.nanzheyin.codexdeck.manager" "false"
+create_app "Codex Deck" "CodexDeck" "$BINARY_DIR/codex-deck" "io.github.nanzheyin.codexdeck" "false"
 
 sign_app "$STAGE/Codex Deck.app"
-sign_app "$STAGE/Codex Deck 管理工具.app"
 
 verify_app "$STAGE/Codex Deck.app"
-verify_app "$STAGE/Codex Deck 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 

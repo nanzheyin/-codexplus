@@ -141,7 +141,7 @@ fn manager_launch_button_spawns_silent_launcher_binary() {
 }
 
 #[test]
-fn macos_packager_hides_silent_launcher_but_not_manager() {
+fn macos_packager_uses_unified_visible_app() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let packager = manifest_dir
         .parent()
@@ -156,11 +156,10 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
     assert!(script.contains("CodexDeck-${VERSION}-macos-${ARCH}.dmg"));
     assert!(script.contains(
-        "create_app \"Codex Deck\" \"CodexDeck\" \"$BINARY_DIR/codex-deck\" \"io.github.nanzheyin.codexdeck\" \"true\""
+        "create_app \"Codex Deck\" \"CodexDeck\" \"$BINARY_DIR/codex-deck\" \"io.github.nanzheyin.codexdeck\" \"false\""
     ));
-    assert!(script.contains(
-        "create_app \"Codex Deck 管理工具\" \"CodexDeckManager\" \"$BINARY_DIR/codex-deck-manager\" \"io.github.nanzheyin.codexdeck.manager\" \"false\""
-    ));
+    assert!(!script.contains("codex-deck-manager"));
+    assert!(!script.contains("Codex Deck 管理工具.app"));
 }
 
 #[test]
