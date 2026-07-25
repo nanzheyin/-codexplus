@@ -3361,6 +3361,10 @@ body {
   white-space: nowrap;
 }
 
+.logs-db-limit-input {
+  width: 120px;
+}
+
 .switch-row {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -4803,6 +4807,7 @@ body {
 
   .feature-action-row .inline-flex,
   .feature-action-row button,
+  .logs-db-limit-input,
   .feature-action-status {
     width: fit-content;
   }

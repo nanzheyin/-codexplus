@@ -264,7 +264,7 @@
   const codexDeleteStyleVersion = "15";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexDeleteVersion = "7";
+  const codexDeleteVersion = "8";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
   const codexActionGroupVersion = "5";
@@ -1363,6 +1363,9 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
+  const codexModelCatalogCacheMs = 5 * 60 * 1000;
+  let codexSignalRequestPromise = null;
+  let codexCloudApiClientPromise = null;
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
   const codexServiceTierLastSupportedModelKey = "codexServiceTierLastSupportedModel";
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
@@ -1417,6 +1420,69 @@
       if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
       throw error;
     }
+  }
+
+  function codexSignalRequestExport(module) {
+    const exports = Object.entries(module || {});
+    const shaped = exports.find(([, value]) => {
+      if (typeof value !== "function" || value.length < 2) return false;
+      try {
+        const source = Function.prototype.toString.call(value);
+        return source.includes(".sendRequest(") && !source.includes("this.sendRequest(");
+      } catch {
+        return false;
+      }
+    });
+    if (shaped) return shaped;
+    return exports.find(([key, value]) => (key === "rn" || key === "hdt") && typeof value === "function") || null;
+  }
+
+  async function codexSignalRequest() {
+    if (!codexSignalRequestPromise) {
+      codexSignalRequestPromise = (async () => {
+        const errors = [];
+        for (const assetPrefix of ["app-server-manager-signals-", "app-initial-"]) {
+          try {
+            const module = await loadOptionalCodexAppModule(assetPrefix);
+            if (!module) {
+              errors.push(`${assetPrefix}: asset missing`);
+              continue;
+            }
+            const signalExport = codexSignalRequestExport(module);
+            if (signalExport) {
+              return { request: signalExport[1], assetPrefix, exportName: signalExport[0] };
+            }
+            errors.push(`${assetPrefix}: request export unavailable`);
+          } catch (error) {
+            errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+          }
+        }
+        throw new Error(`Codex 原生请求接口不可用（${errors.join("; ")}）`);
+      })().catch((error) => {
+        codexSignalRequestPromise = null;
+        throw error;
+      });
+    }
+    return await codexSignalRequestPromise;
+  }
+
+  async function codexCloudApiClient() {
+    if (!codexCloudApiClientPromise) {
+      codexCloudApiClientPromise = (async () => {
+        const module = await loadCodexAppModule("app-initial-");
+        const candidate = Object.values(module || {}).find((value) => value
+          && typeof value === "object"
+          && typeof value.safeGet === "function"
+          && typeof value.safeDelete === "function"
+          && typeof value.getRequestTarget === "function");
+        if (!candidate) throw new Error("Codex 云端 API 客户端不可用");
+        return candidate;
+      })().catch((error) => {
+        codexCloudApiClientPromise = null;
+        throw error;
+      });
+    }
+    return await codexCloudApiClientPromise;
   }
 
   async function codexSettingStorageModule() {
@@ -1582,7 +1648,7 @@
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
     if (codexModelCatalogPromise) return;
     if (!force && codexModelCatalog.status === "failed") return;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return;
+    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < codexModelCatalogCacheMs) return;
     loadCodexModelCatalog(force).then(() => {
       refreshCodexServiceTierControls();
     }).catch(() => {
@@ -2354,7 +2420,7 @@
 
   function scheduleBackendHeartbeat() {
     if (window.__codexPlusBackendHeartbeat) return;
-    window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
+    window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 30000);
     checkBackendStatus();
   }
 
@@ -2577,7 +2643,7 @@
               </div>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示删除按钮，并支持撤销。</div></div>
+              <div><div class="codex-plus-row-title">会话删除</div><div class="codex-plus-row-description">在会话列表悬停显示永久删除按钮；删除后不可撤销。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
             <div class="codex-plus-row">
@@ -3803,7 +3869,9 @@
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
-    return { session_id: sessionId, title };
+    const kind = row.getAttribute("data-app-action-sidebar-thread-kind") || "local";
+    const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id") || (kind === "local" ? "local" : "");
+    return { session_id: sessionId, title, host_id: hostId, kind };
   }
 
   function threadIdBadgeTitleNode(row) {
@@ -3932,9 +4000,17 @@
       window.__codexPlusServiceTierTestDiagnostics.push(payload);
       return;
     }
+    const sendToHelper = () => sendCodexPlusDiagnosticToHelper(payload);
     if (window.__codexSessionDeleteBridge) {
-      window.__codexSessionDeleteBridge("/diagnostics/log", payload).catch(() => {});
+      Promise.resolve(window.__codexSessionDeleteBridge("/diagnostics/log", payload)).then((result) => {
+        if (!result || result.status !== "ok") sendToHelper();
+      }, sendToHelper);
+      return;
     }
+    sendToHelper();
+  }
+
+  function sendCodexPlusDiagnosticToHelper(payload) {
     const body = JSON.stringify(payload);
     try {
       if (navigator.sendBeacon) {
@@ -4978,7 +5054,7 @@
 
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
+    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < codexModelCatalogCacheMs) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
@@ -5005,7 +5081,7 @@
         }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
-        scheduleCodexModelWhitelistRefresh();
+        runCodexModelWhitelistRefreshPass(false);
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -5298,7 +5374,19 @@
 
   function patchReactModelStateNodes() {
     const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
+    return [...document.querySelectorAll(selector)].filter((node) => elementLooksLikeCodexModelMenu(node));
+  }
+
+  function elementLooksLikeCodexModelMenu(node) {
+    if (!node || node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
+    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
+    const container = node.matches?.(selector) ? node : node.querySelector?.(selector);
+    if (!container || isWorkspaceChromeNode(container)) return false;
+    if (container.querySelector?.('[data-testid*="model" i], [aria-label*="model" i], [data-value*="gpt" i], [data-value*="codex" i]')) {
+      return true;
+    }
+    const text = String(container.textContent || "").replace(/\s+/g, " ").trim();
+    return /(?:\b(?:gpt|codex|o[1-9])[-. ]?\d|\bmodel\b|reasoning effort|模型)/i.test(text);
   }
 
   function shouldScheduleReactModelStatePatch(mutations) {
@@ -5307,19 +5395,9 @@
     const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
     return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
       if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
-      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
+      if (!node.matches?.(selector) && !node.querySelector?.(selector)) return false;
+      return elementLooksLikeCodexModelMenu(node);
     }));
-  }
-
-  function schedulePatchReactModelState() {
-    if (window.__codexPlusReactModelStatePatchPending) return;
-    window.__codexPlusReactModelStatePatchPending = true;
-    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
-    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
-      window.__codexPlusReactModelStatePatchPending = false;
-      window.__codexPlusReactModelStatePatchTimer = null;
-      patchReactModelState();
-    }, 120);
   }
 
   function patchReactModelState() {
@@ -5499,12 +5577,12 @@
     installAppServerModelRequestPatch();
   }
 
-  function runCodexModelWhitelistRefreshPass() {
+  function runCodexModelWhitelistRefreshPass(patchReact = false) {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
     let changed = false;
     try {
       patchStatsigModelWhitelist();
-      if (patchReactModelState()) changed = true;
+      if (patchReact && patchReactModelState()) changed = true;
       installAppServerModelRequestPatch();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
@@ -5513,16 +5591,15 @@
     return changed;
   }
 
-  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
+  function scheduleCodexModelWhitelistRefresh(durationMs = 600) {
     if (!codexPlusModelUnlockEnabled()) return;
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
-    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
-      runCodexModelWhitelistRefreshPass();
+      runCodexModelWhitelistRefreshPass(true);
       if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 150);
       }
     };
     tick();
@@ -5534,7 +5611,7 @@
       loadCodexModelCatalog();
       return;
     }
-    runCodexModelWhitelistRefreshPass();
+    runCodexModelWhitelistRefreshPass(false);
   }
 
   function refreshCodexModelWhitelistFromScan(mutations) {
@@ -5545,8 +5622,6 @@
     }
     if (shouldScheduleReactModelStatePatch(mutations)) {
       scheduleCodexModelWhitelistRefresh();
-    } else {
-      runCodexModelWhitelistRefreshPass();
     }
   }
 
@@ -6170,11 +6245,10 @@
     }, 80);
   }
 
-  async function refreshRecentConversationsForHost() {
+  async function refreshRecentConversationsForHost(hostId = "local") {
     try {
-      const signals = await loadOptionalCodexAppModule("app-server-manager-signals-");
-      if (!signals) return;
-      if (typeof signals.rn === "function") await signals.rn("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      const signal = await codexSignalRequest();
+      await signal.request("refresh-recent-conversations-for-host", { hostId, sortKey: "updated_at" });
     } catch (error) {
       window.__codexProjectMoveRefreshFailures = window.__codexProjectMoveRefreshFailures || [];
       window.__codexProjectMoveRefreshFailures.push(String(error?.stack || error));
@@ -6361,21 +6435,11 @@
     return result;
   }
 
-  function showToast(message, undoToken) {
+  function showToast(message) {
     document.querySelectorAll(".codex-delete-toast").forEach((node) => node.remove());
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
     toast.textContent = message;
-    if (undoToken) {
-      const undo = document.createElement("button");
-      undo.textContent = "撤销";
-      undo.addEventListener("click", async () => {
-        const result = await postJson("/undo", { undo_token: undoToken });
-        toast.textContent = result.message || "撤销完成";
-        setTimeout(() => toast.remove(), 5000);
-      });
-      toast.appendChild(undo);
-    }
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 10000);
   }
@@ -7359,11 +7423,11 @@
       overlay.className = "codex-delete-confirm-overlay";
       overlay.innerHTML = `
         <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
-          <div class="codex-delete-confirm-title">删除会话</div>
-          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？</div>
+          <div class="codex-delete-confirm-title">永久删除会话</div>
+          <div class="codex-delete-confirm-message">永久删除“${escapeHtml(title)}”？删除后无法恢复，也不能撤销。</div>
           <div class="codex-delete-confirm-actions">
             <button type="button" data-codex-delete-cancel="true">取消</button>
-            <button type="button" data-codex-delete-confirm="true">删除</button>
+            <button type="button" data-codex-delete-confirm="true">永久删除</button>
           </div>
         </div>
       `;
@@ -7425,6 +7489,82 @@
     }
   }
 
+  function cloudTaskIdFromRef(ref) {
+    const value = String(ref.session_id || "").trim();
+    return value
+      .replace(/^remote:/i, "")
+      .replace(/^cloud:/i, "")
+      .trim();
+  }
+
+  function permanentDeleteErrorMessage(error) {
+    const raw = String(error?.message || error || "删除失败");
+    try {
+      const payload = JSON.parse(raw);
+      if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail.trim();
+      if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
+    } catch {
+    }
+    return raw;
+  }
+
+  async function permanentlyDeleteNativeThread(ref) {
+    const resolved = await postJson("/delete/resolve-thread", ref);
+    if (resolved.status !== "ok" || !resolved.session_id) {
+      throw new Error(resolved.message || "未找到真实 thread ID，未执行删除");
+    }
+    const hostId = ref.host_id || "local";
+    const signal = await codexSignalRequest();
+    await signal.request("send-cli-request-for-host", {
+      hostId,
+      method: "thread/delete",
+      params: { threadId: resolved.session_id },
+    });
+    let cleanup;
+    try {
+      cleanup = await postJson("/delete/cleanup", { ...ref, session_id: resolved.session_id });
+    } catch (error) {
+      cleanup = {
+        status: "partial",
+        message: `会话已永久删除，但本地列表残留清理失败：${permanentDeleteErrorMessage(error)}`,
+      };
+    }
+    await refreshRecentConversationsForHost(hostId);
+    return {
+      status: "server_deleted",
+      session_id: resolved.session_id,
+      message: cleanup.message || "会话已永久删除",
+      cleanup_status: cleanup.status || "ok",
+    };
+  }
+
+  async function permanentlyDeleteCloudTask(ref) {
+    const taskId = cloudTaskIdFromRef(ref);
+    if (!taskId) throw new Error("未找到云端任务 ID，未执行删除");
+    const client = await codexCloudApiClient();
+    try {
+      await client.safeDelete("/wham/tasks/{task_id}", {
+        parameters: { path: { task_id: taskId } },
+      });
+    } catch (error) {
+      const status = Number(error?.status || 0);
+      if (status === 404 || status === 405 || status === 501) {
+        throw new Error("当前 Codex 云端服务未提供永久删除接口；任务未被隐藏或归档");
+      }
+      throw new Error(`云端任务永久删除失败：${permanentDeleteErrorMessage(error)}`);
+    }
+    return {
+      status: "server_deleted",
+      session_id: taskId,
+      message: "云端任务已永久删除",
+    };
+  }
+
+  async function permanentlyDeleteSession(ref) {
+    if (ref.kind === "remote") return await permanentlyDeleteCloudTask(ref);
+    return await permanentlyDeleteNativeThread(ref);
+  }
+
   function updateDeleteButtonOffsets() {
     sessionRows().forEach((row) => {
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
@@ -7446,12 +7586,15 @@
     confirmDelete(ref.title).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
-      const result = await postJson("/delete", ref);
-      if (result.status === "server_deleted" || result.status === "local_deleted") {
+      button.disabled = true;
+      try {
+        const result = await permanentlyDeleteSession(ref);
         removeDeletedRow(row, button, ref);
-        showToast(result.message || "删除成功", result.undo_token);
-      } else {
-        showToast(result.message || "删除失败", null);
+        showToast(result.message || "会话已永久删除", null);
+      } catch (error) {
+        showToast(permanentDeleteErrorMessage(error), null);
+      } finally {
+        if (button.isConnected) button.disabled = false;
       }
     });
   }
@@ -7897,7 +8040,7 @@
       deleteButton.type = "button";
       deleteButton.className = `${actionButtonClass} ${buttonClass}`;
       deleteButton.dataset.codexDeleteVersion = codexDeleteVersion;
-      configureSvgActionButton(deleteButton, "删除", trashIconSvg());
+      configureSvgActionButton(deleteButton, "永久删除", trashIconSvg());
       const openDeleteConfirm = (event) => openDeleteConfirmForRow(row, deleteButton, ref, event);
       installActionButtonEvents(row, deleteButton, openDeleteConfirm);
       group.appendChild(deleteButton);

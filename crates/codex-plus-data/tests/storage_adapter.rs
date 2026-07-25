@@ -2,6 +2,7 @@ use codex_plus_core::models::{DeleteStatus, SessionRef};
 use codex_plus_data::{
     BackupStore, SQLiteStorageAdapter, delete_local_from_paths,
     delete_local_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
+    resolve_codex_thread_id,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -648,6 +649,30 @@ fn delete_local_from_paths_with_cleanup_resolves_client_thread_id() {
     assert_eq!(
         state["electron-persisted-atom-state"]["sidebar-width"],
         json!(296)
+    );
+}
+
+#[test]
+fn resolve_codex_thread_id_maps_unique_client_id_to_native_thread_id() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    let thread_id = "019f6441-9ee0-7622-9c97-30a4b619b37b";
+    let client_id = "client-new-thread:e12277b2-da73-4cf7-98d1-2b91167ca1e2";
+    fs::write(
+        home.join(".codex-global-state.json"),
+        json!({
+            "electron-persisted-atom-state": {
+                format!("thread-client-id-v1:local%3A{thread_id}"): client_id
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_codex_thread_id(&home, &format!("local:{client_id}")),
+        thread_id
     );
 }
 

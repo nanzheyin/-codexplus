@@ -471,6 +471,54 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("undo task failed: {error}"))
     }
 
+    async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            let thread_id =
+                codex_plus_data::resolve_codex_thread_id(&codex_home, &session.session_id);
+            if thread_id.starts_with("client-new-thread:") {
+                return json!({
+                    "status": "failed",
+                    "session_id": session.session_id,
+                    "message": "未找到该会话对应的真实 thread ID，未执行删除"
+                });
+            }
+            json!({
+                "status": "ok",
+                "session_id": thread_id
+            })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("resolve thread ID task failed: {error}"))
+    }
+
+    async fn cleanup_deleted_thread(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            let thread_id =
+                codex_plus_data::resolve_codex_thread_id(&codex_home, &session.session_id);
+            match codex_plus_data::prune_deleted_thread_references(
+                &codex_home,
+                std::slice::from_ref(&thread_id),
+            ) {
+                Ok(prune) => json!({
+                    "status": "ok",
+                    "session_id": thread_id,
+                    "message": "会话已永久删除",
+                    "pruned_session_index_entries": prune.pruned_session_index_entries,
+                    "app_state_pruned": prune.app_state_pruned
+                }),
+                Err(error) => json!({
+                    "status": "partial",
+                    "session_id": thread_id,
+                    "message": format!("会话已永久删除，但本地列表残留清理失败：{error}")
+                }),
+            }
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("cleanup deleted thread task failed: {error}"))
+    }
+
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {
         let db_paths = self.candidate_db_paths();
         tokio::task::spawn_blocking(move || {

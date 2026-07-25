@@ -1611,6 +1611,8 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .provider_sync_last_selected_provider
         .trim()
         .to_string();
+    settings.codex_logs_db_max_mb =
+        codex_plus_core::settings::normalize_codex_logs_db_max_mb(settings.codex_logs_db_max_mb);
     settings
 }
 

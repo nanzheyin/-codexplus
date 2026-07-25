@@ -924,7 +924,7 @@ fn normalize_codex_thread_id(session_id: &str) -> String {
         .to_string()
 }
 
-fn resolve_codex_thread_id(codex_home: &Path, session_id: &str) -> String {
+pub fn resolve_codex_thread_id(codex_home: &Path, session_id: &str) -> String {
     let normalized = normalize_codex_thread_id(session_id);
     let state = fs::read_to_string(codex_home.join(".codex-global-state.json"))
         .ok()

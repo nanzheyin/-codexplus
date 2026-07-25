@@ -16,4 +16,5 @@ pub use provider_sync::{
 pub use storage::{
     LocalSession, SQLiteStorageAdapter, delete_local_from_paths,
     delete_local_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
+    resolve_codex_thread_id,
 };

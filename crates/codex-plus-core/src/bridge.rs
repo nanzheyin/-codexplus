@@ -25,14 +25,15 @@ pub type BridgeHandler = Arc<
 
 #[derive(Debug)]
 pub struct BridgeRuntime {
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown: Option<tokio::sync::oneshot::Sender<Vec<String>>>,
     task: Option<tokio::task::JoinHandle<()>>,
+    new_document_script_identifiers: Vec<String>,
 }
 
 impl BridgeRuntime {
     pub async fn shutdown(mut self) {
         if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+            let _ = shutdown.send(std::mem::take(&mut self.new_document_script_identifiers));
         }
         if let Some(task) = self.task.take() {
             let mut task = task;
@@ -50,11 +51,9 @@ impl BridgeRuntime {
 impl Drop for BridgeRuntime {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+            let _ = shutdown.send(std::mem::take(&mut self.new_document_script_identifiers));
         }
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        let _ = self.task.take();
     }
 }
 
@@ -189,13 +188,17 @@ pub async fn install_bridge(
         .await?;
 
     let bridge_script = build_bridge_script(binding_name);
-    session
+    let mut new_document_script_identifiers = Vec::new();
+    let add_bridge_response = session
         .send_command(
             4,
             "Page.addScriptToEvaluateOnNewDocument",
             json!({ "source": bridge_script }),
         )
         .await?;
+    if let Some(identifier) = new_document_script_identifier(&add_bridge_response) {
+        new_document_script_identifiers.push(identifier);
+    }
     session
         .send_command(
             5,
@@ -206,13 +209,16 @@ pub async fn install_bridge(
 
     for script in new_document_scripts {
         let message_id = next_message_id();
-        session
+        let add_script_response = session
             .send_command(
                 message_id,
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": script }),
             )
             .await?;
+        if let Some(identifier) = new_document_script_identifier(&add_script_response) {
+            new_document_script_identifiers.push(identifier);
+        }
         let message_id = next_message_id();
         session
             .send_command(
@@ -228,7 +234,18 @@ pub async fn install_bridge(
     let task = tokio::spawn(async move {
         loop {
             let message = tokio::select! {
-                _ = &mut shutdown_rx => break,
+                identifiers = &mut shutdown_rx => {
+                    if let Ok(identifiers) = identifiers {
+                        for identifier in identifiers {
+                            let _ = session.send_command_without_wait(
+                                next_message_id(),
+                                "Page.removeScriptToEvaluateOnNewDocument",
+                                json!({ "identifier": identifier }),
+                            ).await;
+                        }
+                    }
+                    break;
+                },
                 message = session.next_message() => message,
             };
             match message {
@@ -244,7 +261,16 @@ pub async fn install_bridge(
     Ok(BridgeRuntime {
         shutdown: Some(shutdown),
         task: Some(task),
+        new_document_script_identifiers,
     })
+}
+
+fn new_document_script_identifier(response: &Value) -> Option<String> {
+    response
+        .get("result")
+        .and_then(|result| result.get("identifier"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 pub fn runtime_evaluate_params(script: &str) -> Value {

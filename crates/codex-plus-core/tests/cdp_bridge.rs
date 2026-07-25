@@ -831,6 +831,21 @@ fn injection_script_does_not_add_delete_controls_on_archived_page() {
 }
 
 #[test]
+fn injection_script_uses_permanent_delete_contract_for_local_and_cloud_threads() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("data-app-action-sidebar-thread-host-id"));
+    assert!(script.contains("data-app-action-sidebar-thread-kind"));
+    assert!(script.contains("method: \"thread/delete\""));
+    assert!(script.contains("client.safeDelete(\"/wham/tasks/{task_id}\""));
+    assert!(script.contains("删除后无法恢复，也不能撤销"));
+    assert!(script.contains("会话已永久删除，但本地列表残留清理失败"));
+    assert!(!script.contains("postJson(\"/delete\", ref)"));
+    assert!(!script.contains("postJson(\"/undo\""));
+    assert!(!script.contains("undo_token"));
+}
+
+#[test]
 fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(57321);
 
@@ -848,12 +863,30 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("Response.prototype.json"));
     assert!(script.contains("scheduleCodexModelWhitelistRefresh"));
     assert!(script.contains("runCodexModelWhitelistRefreshPass"));
-    assert!(script.contains("model_whitelist_refresh_scheduled"));
+    assert!(script.contains("codexModelCatalogCacheMs = 5 * 60 * 1000"));
+    assert!(script.contains("elementLooksLikeCodexModelMenu"));
+    assert!(script.contains("scheduleCodexModelWhitelistRefresh(durationMs = 600)"));
+    assert!(script.contains("runCodexModelWhitelistRefreshPass(true)"));
+    assert!(script.contains("window.setTimeout(tick, 150)"));
+    assert!(!script.contains("scheduleCodexModelWhitelistRefresh(durationMs = 2500)"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
     assert!(script.contains("isWorkspaceChromeNode"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
+}
+
+#[test]
+fn injection_script_avoids_duplicate_diagnostics_and_uses_slower_heartbeat() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function sendCodexPlusDiagnosticToHelper(payload)"));
+    assert!(script.contains(
+        "Promise.resolve(window.__codexSessionDeleteBridge(\"/diagnostics/log\", payload))"
+    ));
+    assert!(script.contains("if (!result || result.status !== \"ok\") sendToHelper();"));
+    assert!(script.contains("setInterval(checkBackendStatus, 30000)"));
+    assert!(!script.contains("setInterval(checkBackendStatus, 5000)"));
 }
 
 #[test]
@@ -2047,6 +2080,78 @@ async fn bridge_runtime_shutdown_closes_message_pump() {
     tokio::time::timeout(Duration::from_secs(2), request_rx)
         .await
         .expect("CDP server should observe bridge shutdown")
+        .expect("CDP server task should finish without panicking");
+}
+
+#[tokio::test]
+async fn bridge_runtime_shutdown_removes_registered_new_document_scripts() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        for expected_id in 1..=3 {
+            let command = recv_json(&mut socket).await;
+            assert_eq!(command["id"], expected_id);
+            send_json(&mut socket, json!({ "id": expected_id, "result": {} })).await;
+        }
+
+        let add_bridge = recv_json(&mut socket).await;
+        assert_eq!(
+            add_bridge["method"],
+            "Page.addScriptToEvaluateOnNewDocument"
+        );
+        send_json(
+            &mut socket,
+            json!({ "id": add_bridge["id"], "result": { "identifier": "bridge-script" } }),
+        )
+        .await;
+
+        let evaluate_bridge = recv_json(&mut socket).await;
+        assert_eq!(evaluate_bridge["method"], "Runtime.evaluate");
+        send_json(
+            &mut socket,
+            json!({ "id": evaluate_bridge["id"], "result": {} }),
+        )
+        .await;
+
+        let add_injection = recv_json(&mut socket).await;
+        assert_eq!(
+            add_injection["method"],
+            "Page.addScriptToEvaluateOnNewDocument"
+        );
+        send_json(
+            &mut socket,
+            json!({ "id": add_injection["id"], "result": { "identifier": "injection-script" } }),
+        )
+        .await;
+
+        let evaluate_injection = recv_json(&mut socket).await;
+        assert_eq!(evaluate_injection["method"], "Runtime.evaluate");
+        send_json(
+            &mut socket,
+            json!({ "id": evaluate_injection["id"], "result": {} }),
+        )
+        .await;
+
+        for expected_identifier in ["bridge-script", "injection-script"] {
+            let remove = recv_json(&mut socket).await;
+            assert_eq!(remove["method"], "Page.removeScriptToEvaluateOnNewDocument");
+            assert_eq!(remove["params"]["identifier"], expected_identifier);
+        }
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    let runtime = bridge::install_bridge(
+        &url,
+        BRIDGE_BINDING_NAME,
+        noop_handler(),
+        &["window.mainInjected = true;".to_string()],
+    )
+    .await
+    .expect("bridge install should succeed");
+
+    runtime.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), request_rx)
+        .await
+        .expect("CDP server should observe script removal")
         .expect("CDP server task should finish without panicking");
 }
 

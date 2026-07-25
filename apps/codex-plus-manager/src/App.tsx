@@ -173,6 +173,7 @@ type BackendSettings = {
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppFastStartup: boolean;
+  codexLogsDbMaxMb: number;
   codexAppProjectMove: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
@@ -865,6 +866,7 @@ const defaultSettings: BackendSettings = {
   codexAppPasteFix: false,
   codexAppForceChineseLocale: true,
   codexAppFastStartup: false,
+  codexLogsDbMaxMb: 0,
   codexAppProjectMove: true,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
@@ -3763,7 +3765,7 @@ function EnhanceScreen({
               </div>
             </FeatureGroup>
             <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
-              <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
+              <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示永久删除按钮；删除后不可撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
               <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
               <FeatureToggle title={t("用户脚本热重载")} detail={t("默认关闭；开启后每 1 秒检查脚本和配置变化并自动 reload，可能增加资源消耗或导致脚本重复执行。需重启 Codex 才生效。")} checked={form.codexAppUserScriptHotReload} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUserScriptHotReload", value)} />
               <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
@@ -3780,6 +3782,30 @@ function EnhanceScreen({
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
               <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
+              <div className="feature-action-row">
+                <div>
+                  <strong>{t("Codex 日志数据库上限")}</strong>
+                  <small>{t("0 表示关闭；超限时会在启动 Codex 前删除最旧日志并压缩数据库，不影响会话、消息和 rollout。")}</small>
+                </div>
+                <Input
+                  aria-label={t("Codex 日志数据库上限")}
+                  className="logs-db-limit-input"
+                  max={16384}
+                  min={0}
+                  step={64}
+                  type="number"
+                  value={form.codexLogsDbMaxMb}
+                  onChange={(event) => onFormChange({
+                    ...form,
+                    codexLogsDbMaxMb: clampNumber(Number(event.currentTarget.value), 0, 16384),
+                  })}
+                  onBlur={(event) => onFormChange({
+                    ...form,
+                    codexLogsDbMaxMb: normalizeLogsDbMaxMb(Number(event.currentTarget.value)),
+                  })}
+                />
+                <span className="feature-action-status">MB</span>
+              </div>
               <FeatureToggle title={t("原生菜单栏位置")} detail={t("把 Codex Deck 菜单插入 Codex 顶部原生菜单栏。")} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
             </FeatureGroup>
@@ -8248,6 +8274,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     codexAppGoalResumeGuard: settings.codexAppGoalResumeGuard === true,
+    codexLogsDbMaxMb: normalizeLogsDbMaxMb(settings.codexLogsDbMaxMb ?? 0),
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
@@ -8275,6 +8302,11 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeLogsDbMaxMb(value: number): number {
+  const normalized = clampNumber(value, 0, 16384);
+  return normalized === 0 ? 0 : Math.max(64, normalized);
 }
 
 function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {

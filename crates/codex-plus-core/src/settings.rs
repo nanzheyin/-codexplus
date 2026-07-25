@@ -246,6 +246,12 @@ pub struct BackendSettings {
     pub codex_app_force_chinese_locale: bool,
     #[serde(rename = "codexAppFastStartup", default)]
     pub codex_app_fast_startup: bool,
+    #[serde(
+        rename = "codexLogsDbMaxMb",
+        default,
+        deserialize_with = "deserialize_codex_logs_db_max_mb"
+    )]
+    pub codex_logs_db_max_mb: u32,
     #[serde(rename = "codexAppProjectMove", default = "default_true")]
     pub codex_app_project_move: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
@@ -437,6 +443,7 @@ impl Default for BackendSettings {
             codex_app_paste_fix: false,
             codex_app_force_chinese_locale: true,
             codex_app_fast_startup: false,
+            codex_logs_db_max_mb: 0,
             codex_app_project_move: true,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
@@ -626,6 +633,17 @@ pub fn default_stepwise_timeout_ms() -> u64 {
     8000
 }
 
+pub const CODEX_LOGS_DB_MAX_MB_MIN: u32 = 64;
+pub const CODEX_LOGS_DB_MAX_MB_MAX: u32 = 16 * 1024;
+
+pub fn normalize_codex_logs_db_max_mb(value: u32) -> u32 {
+    if value == 0 {
+        0
+    } else {
+        value.clamp(CODEX_LOGS_DB_MAX_MB_MIN, CODEX_LOGS_DB_MAX_MB_MAX)
+    }
+}
+
 fn default_image_overlay_opacity() -> u8 {
     35
 }
@@ -747,6 +765,15 @@ where
     Ok(Option::<u64>::deserialize(deserializer)?
         .map(clamp_stepwise_timeout_ms)
         .unwrap_or_else(default_stepwise_timeout_ms))
+}
+
+fn deserialize_codex_logs_db_max_mb<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?
+        .map(normalize_codex_logs_db_max_mb)
+        .unwrap_or_default())
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -933,6 +960,18 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     merge_bool_setting(target, source, "codexAppFastStartup");
+    if let Some(value) = source
+        .get("codexLogsDbMaxMb")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        target.insert(
+            "codexLogsDbMaxMb".to_string(),
+            Value::Number(serde_json::Number::from(normalize_codex_logs_db_max_mb(
+                value,
+            ))),
+        );
+    }
     merge_bool_setting(target, source, "codexAppProjectMove");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
@@ -1268,6 +1307,7 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
+    settings.codex_logs_db_max_mb = normalize_codex_logs_db_max_mb(settings.codex_logs_db_max_mb);
     settings
 }
 
@@ -1540,6 +1580,22 @@ mod tests {
         let enabled: BackendSettings =
             serde_json::from_str(r#"{"codexAppUserScriptHotReload":true}"#).unwrap();
         assert!(enabled.codex_app_user_script_hot_reload);
+    }
+
+    #[test]
+    fn settings_deserialize_normalizes_codex_logs_database_limit() {
+        let legacy: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.codex_logs_db_max_mb, 0);
+
+        let disabled: BackendSettings = serde_json::from_str(r#"{"codexLogsDbMaxMb":0}"#).unwrap();
+        assert_eq!(disabled.codex_logs_db_max_mb, 0);
+
+        let too_small: BackendSettings = serde_json::from_str(r#"{"codexLogsDbMaxMb":1}"#).unwrap();
+        assert_eq!(too_small.codex_logs_db_max_mb, CODEX_LOGS_DB_MAX_MB_MIN);
+
+        let too_large: BackendSettings =
+            serde_json::from_str(r#"{"codexLogsDbMaxMb":999999}"#).unwrap();
+        assert_eq!(too_large.codex_logs_db_max_mb, CODEX_LOGS_DB_MAX_MB_MAX);
     }
 
     #[test]

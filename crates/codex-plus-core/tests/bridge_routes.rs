@@ -54,6 +54,14 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/delete", json!({"session_id": "s1", "title": "First"})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
+            "/delete/resolve-thread",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        (
+            "/delete/cleanup",
+            json!({"session_id": "s1", "title": "First"}),
+        ),
+        (
             "/export-markdown",
             json!({"session_id": "s1", "title": "First"}),
         ),
@@ -375,6 +383,28 @@ async fn data_routes_forward_payloads_to_data_service() {
             "message": "undone",
             "undo_token": "undo-s1",
             "backup_path": null
+        })
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/delete/resolve-thread",
+            json!({"session_id": "s1", "title": "First"}),
+        )
+        .await,
+        json!({"status": "ok", "session_id": "resolved-s1"})
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/delete/cleanup",
+            json!({"session_id": "resolved-s1", "title": "First"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "session_id": "resolved-s1",
+            "message": "cleaned"
         })
     );
     assert_eq!(
@@ -1184,6 +1214,21 @@ impl BridgeDataService for FakeData {
             undo_token: Some(undo_token),
             backup_path: None,
         })
+    }
+
+    async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "session_id": format!("resolved-{}", session.session_id)
+        }))
+    }
+
+    async fn cleanup_deleted_thread(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "session_id": session.session_id,
+            "message": "cleaned"
+        }))
     }
 
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {

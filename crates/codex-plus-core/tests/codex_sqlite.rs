@@ -1,6 +1,6 @@
 use codex_plus_core::codex_sqlite::{
     codex_listable_session_db_paths_from_home, codex_session_db_paths_from_home,
-    sanitize_historical_model_suffixes, sanitize_logs_model_suffixes_once,
+    maintain_logs_db_size, sanitize_historical_model_suffixes, sanitize_logs_model_suffixes_once,
 };
 use rusqlite::Connection;
 
@@ -14,6 +14,29 @@ fn create_threads_table(conn: &Connection) {
         [],
     )
     .unwrap();
+}
+
+fn create_large_logs_database(path: &std::path::Path, rows: i64) {
+    let mut conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            ts_nanos INTEGER NOT NULL,
+            feedback_log_body BLOB NOT NULL
+        );
+        CREATE INDEX logs_timestamp_idx ON logs(ts, ts_nanos);",
+    )
+    .unwrap();
+    let tx = conn.transaction().unwrap();
+    for index in 0..rows {
+        tx.execute(
+            "INSERT INTO logs (ts, ts_nanos, feedback_log_body) VALUES (?1, ?2, zeroblob(2048))",
+            rusqlite::params![index, index],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
 }
 
 #[test]
@@ -308,4 +331,75 @@ fn logs_sanitize_once_skips_large_logs_database() {
         home.join(".tmp/codex-plus/logs-model-suffix-cleanup-v1.json")
             .exists()
     );
+}
+
+#[test]
+fn logs_database_maintenance_is_opt_in_and_skips_missing_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+
+    let disabled = maintain_logs_db_size(&home, 0).unwrap();
+    assert_eq!(disabled.status, "disabled");
+
+    let missing = maintain_logs_db_size(&home, 2).unwrap();
+    assert_eq!(missing.status, "missing");
+}
+
+#[test]
+fn logs_database_maintenance_deletes_oldest_rows_and_compacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let logs_path = home.join("logs_2.sqlite");
+    create_large_logs_database(&logs_path, 3_000);
+    let state_path = home.join("state_5.sqlite");
+    let state = Connection::open(&state_path).unwrap();
+    state
+        .execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", [])
+        .unwrap();
+    state
+        .execute("INSERT INTO threads (id) VALUES ('keep-me')", [])
+        .unwrap();
+    drop(state);
+
+    let before = std::fs::metadata(&logs_path).unwrap().len();
+    assert!(before > 2 * 1024 * 1024);
+
+    let result = maintain_logs_db_size(&home, 2).unwrap();
+
+    assert_eq!(result.status, "compacted");
+    assert!(result.deleted_rows > 0);
+    assert!(result.db_bytes_after < result.db_bytes_before);
+    assert!(result.db_bytes_after <= result.max_bytes);
+    let logs = Connection::open(&logs_path).unwrap();
+    let remaining: i64 = logs
+        .query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0))
+        .unwrap();
+    let oldest_ts: Option<i64> = logs
+        .query_row("SELECT MIN(ts) FROM logs", [], |row| row.get(0))
+        .unwrap();
+    assert!(remaining < 3_000);
+    assert!(oldest_ts.is_some_and(|value| value > 0));
+    let state = Connection::open(&state_path).unwrap();
+    let thread_id: String = state
+        .query_row("SELECT id FROM threads", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(thread_id, "keep-me");
+}
+
+#[test]
+fn logs_database_maintenance_skips_when_write_lock_is_busy() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join(".codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let logs_path = home.join("logs_2.sqlite");
+    create_large_logs_database(&logs_path, 1_000);
+    let lock = Connection::open(&logs_path).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let result = maintain_logs_db_size(&home, 1).unwrap();
+
+    assert_eq!(result.status, "skipped_busy");
+    assert_eq!(result.deleted_rows, 0);
+    lock.execute_batch("ROLLBACK").unwrap();
 }

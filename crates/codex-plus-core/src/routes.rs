@@ -89,6 +89,8 @@ pub trait BridgeRuntimeService: Send + Sync {
 pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
+    async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value>;
+    async fn cleanup_deleted_thread(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn find_archived_thread_by_title(
@@ -185,6 +187,16 @@ pub async fn handle_bridge_request(
                 .unwrap_or_default()
                 .to_string();
             result_value(ctx.data.undo(undo_token).await)
+        }
+        "/delete/resolve-thread" => {
+            ctx.data
+                .resolve_thread_id(session_from_payload(&payload))
+                .await
+        }
+        "/delete/cleanup" => {
+            ctx.data
+                .cleanup_deleted_thread(session_from_payload(&payload))
+                .await
         }
         "/export-markdown" => result_value(
             ctx.data
@@ -486,6 +498,22 @@ impl BridgeDataService for UnavailableDataService {
             undo_token: Some(undo_token),
             backup_path: None,
         })
+    }
+
+    async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "failed",
+            "session_id": session.session_id,
+            "message": "Thread ID resolver is not wired in core launcher hooks"
+        }))
+    }
+
+    async fn cleanup_deleted_thread(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "partial",
+            "session_id": session.session_id,
+            "message": "Deleted thread cleanup is not wired in core launcher hooks"
+        }))
     }
 
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult> {

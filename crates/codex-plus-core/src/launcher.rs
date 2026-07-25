@@ -23,6 +23,8 @@ const POST_LAUNCH_COMPUTER_USE_GUARD_SECONDS: &[u64] = &[0, 5, 15, 30, 60, 120, 
 const POST_LAUNCH_COMPUTER_USE_GUARD_STABLE_ATTEMPTS: usize = 3;
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
+const BRIDGE_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const BRIDGE_WATCHDOG_MAX_BACKOFF_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -402,6 +404,14 @@ where
             launch_started_at,
             &mut phase_started_at,
         );
+        maintain_logs_db_before_launch(&home, settings.codex_logs_db_max_mb).await;
+        if settings.codex_logs_db_max_mb > 0 {
+            log_launch_phase(
+                "maintain_logs_database",
+                launch_started_at,
+                &mut phase_started_at,
+            );
+        }
         spawn_logs_model_suffix_cleanup_once(home.clone());
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
@@ -564,6 +574,55 @@ fn spawn_logs_model_suffix_cleanup_once(home: PathBuf) {
             }
         }
     });
+}
+
+async fn maintain_logs_db_before_launch(home: &Path, max_mb: u32) {
+    if max_mb == 0 {
+        return;
+    }
+    let home = home.to_path_buf();
+    let started_at = Instant::now();
+    match tokio::task::spawn_blocking(move || {
+        crate::codex_sqlite::maintain_logs_db_size(&home, max_mb)
+    })
+    .await
+    {
+        Ok(Ok(result)) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_sqlite.maintain_logs_db_size",
+                serde_json::json!({
+                    "status": result.status,
+                    "db_bytes_before": result.db_bytes_before,
+                    "db_bytes_after": result.db_bytes_after,
+                    "max_bytes": result.max_bytes,
+                    "target_bytes": result.target_bytes,
+                    "estimated_live_bytes": result.estimated_live_bytes,
+                    "deleted_rows": result.deleted_rows,
+                    "elapsed_ms": started_at.elapsed().as_millis(),
+                }),
+            );
+        }
+        Ok(Err(error)) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_sqlite.maintain_logs_db_size_failed",
+                serde_json::json!({
+                    "max_mb": max_mb,
+                    "message": error.to_string(),
+                    "elapsed_ms": started_at.elapsed().as_millis(),
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_sqlite.maintain_logs_db_size_task_failed",
+                serde_json::json!({
+                    "max_mb": max_mb,
+                    "message": error.to_string(),
+                    "elapsed_ms": started_at.elapsed().as_millis(),
+                }),
+            );
+        }
+    }
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
@@ -750,20 +809,43 @@ impl DefaultLaunchHooks {
         let task = tokio::spawn(async move {
             #[cfg(windows)]
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(BRIDGE_WATCHDOG_INTERVAL);
+            let mut consecutive_bridge_failures = 0u32;
+            let mut next_bridge_check_at = Instant::now();
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
-                        let (pet_result, _) = tokio::join!(
-                            sync_pet_real_mouse_overlay(debug_port, helper_port),
-                            check_and_reinject_bridge_with(
-                                debug_port,
-                                helper_port,
-                                &reinject,
-                            ),
-                        );
+                        let (pet_result, bridge_outcome) = if Instant::now() >= next_bridge_check_at {
+                            let (pet_result, bridge_outcome) = tokio::join!(
+                                sync_pet_real_mouse_overlay(debug_port, helper_port),
+                                check_and_reinject_bridge_with(
+                                    debug_port,
+                                    helper_port,
+                                    &reinject,
+                                ),
+                            );
+                            (pet_result, Some(bridge_outcome))
+                        } else {
+                            (
+                                sync_pet_real_mouse_overlay(debug_port, helper_port).await,
+                                None,
+                            )
+                        };
                         record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
+                        if let Some(outcome) = bridge_outcome {
+                            match outcome {
+                                BridgeWatchdogOutcome::ReinjectFailed => {
+                                    consecutive_bridge_failures = consecutive_bridge_failures.saturating_add(1);
+                                    next_bridge_check_at = Instant::now()
+                                        + bridge_watchdog_failure_backoff(consecutive_bridge_failures);
+                                }
+                                BridgeWatchdogOutcome::Healthy | BridgeWatchdogOutcome::Reinjected => {
+                                    consecutive_bridge_failures = 0;
+                                    next_bridge_check_at = Instant::now() + BRIDGE_WATCHDOG_INTERVAL;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2238,11 +2320,18 @@ async fn retry_injection(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeWatchdogOutcome {
+    Healthy,
+    Reinjected,
+    ReinjectFailed,
+}
+
 async fn check_and_reinject_bridge_with<F, Fut>(
     debug_port: u16,
     helper_port: u16,
     reinject: &F,
-) -> bool
+) -> BridgeWatchdogOutcome
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
@@ -2262,10 +2351,22 @@ where
         }
     };
     if healthy {
-        return false;
+        return BridgeWatchdogOutcome::Healthy;
     }
 
-    reinject_unhealthy_bridge_with(debug_port, helper_port, reinject).await
+    if reinject_unhealthy_bridge_with(debug_port, helper_port, reinject).await {
+        BridgeWatchdogOutcome::Reinjected
+    } else {
+        BridgeWatchdogOutcome::ReinjectFailed
+    }
+}
+
+fn bridge_watchdog_failure_backoff(consecutive_failures: u32) -> std::time::Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(4);
+    let seconds = 5u64
+        .saturating_mul(1u64 << exponent)
+        .min(BRIDGE_WATCHDOG_MAX_BACKOFF_SECONDS);
+    std::time::Duration::from_secs(seconds)
 }
 
 async fn reinject_unhealthy_bridge_with<F, Fut>(
@@ -3029,6 +3130,16 @@ mod tests {
 
         assert!(reinjected);
         assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn bridge_watchdog_failure_backoff_is_bounded_and_resets_externally() {
+        assert_eq!(bridge_watchdog_failure_backoff(1).as_secs(), 5);
+        assert_eq!(bridge_watchdog_failure_backoff(2).as_secs(), 10);
+        assert_eq!(bridge_watchdog_failure_backoff(3).as_secs(), 20);
+        assert_eq!(bridge_watchdog_failure_backoff(4).as_secs(), 40);
+        assert_eq!(bridge_watchdog_failure_backoff(5).as_secs(), 60);
+        assert_eq!(bridge_watchdog_failure_backoff(20).as_secs(), 60);
     }
 
     #[test]
