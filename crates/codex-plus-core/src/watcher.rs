@@ -143,6 +143,10 @@ pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: boo
     !has_codex_process && !cdp_listening
 }
 
+pub fn should_defer_existing_codex_activation(has_codex_process: bool) -> bool {
+    !has_codex_process
+}
+
 pub fn process_ids_still_running(
     expected: &[u32],
     running: impl IntoIterator<Item = u32>,

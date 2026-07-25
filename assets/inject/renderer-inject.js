@@ -275,7 +275,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "5";
+  const codexServiceTierBadgeVersion = "6";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -324,7 +324,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "4";
+  const codexServiceTierRequestOverrideVersion = "5";
+  const codexServiceTierDispatcherRetryDelayMs = 5000;
   const codexAppServerModelRequestPatchVersion = "1";
   const codexProjectlessMainWindowVersion = "1";
   const codexProjectlessMainWindowSetting = { key: "hotkey-window-projectless-default-enabled", default: false };
@@ -1363,6 +1364,9 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
+  let codexSettingStoragePromise = null;
+  let codexServiceTierDispatcherPatchPromise = null;
+  let codexServiceTierDispatcherPatchRetryAt = 0;
   const codexModelCatalogCacheMs = 5 * 60 * 1000;
   let codexSignalRequestPromise = null;
   let codexCloudApiClientPromise = null;
@@ -1388,9 +1392,11 @@
       try {
         const text = await fetch(src).then((response) => response.ok ? response.text() : "");
         const escaped = namePart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const match = text.match(new RegExp(`["'](\\./assets/${escaped}[^"']+\\.js)["']`));
+        const match = text.match(new RegExp(`(\\./(?:assets/)?${escaped}[^"'\\s)]*?\\.js)`));
         if (!match) continue;
-        return new URL(match[1], src).href;
+        return match[1].startsWith("./assets/")
+          ? new URL(match[1], window.location.href).href
+          : new URL(match[1], src).href;
       } catch {
       }
     }
@@ -1485,12 +1491,49 @@
     return await codexCloudApiClientPromise;
   }
 
+  function codexSettingStorageFromModule(module) {
+    const exports = Object.entries(module || {});
+    const functionSource = (value) => {
+      if (typeof value !== "function") return "";
+      try {
+        return Function.prototype.toString.call(value);
+      } catch {
+        return "";
+      }
+    };
+    const getter = exports.find(([, value]) => {
+      const source = functionSource(value);
+      return source.includes("get-setting") && source.includes(".value") && source.includes(".default");
+    }) || (typeof module?.n === "function" ? ["n", module.n] : null);
+    const setter = exports.find(([, value]) => {
+      const source = functionSource(value);
+      return source.includes("set-setting") && source.includes("value") && value.length >= 2;
+    }) || (typeof module?.s === "function" ? ["s", module.s] : null);
+    if (!getter || !setter) return null;
+    return { n: getter[1], s: setter[1], getExportName: getter[0], setExportName: setter[0] };
+  }
+
   async function codexSettingStorageModule() {
-    const module = await loadCodexAppModule("setting-storage-");
-    if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+    if (!codexSettingStoragePromise) {
+      codexSettingStoragePromise = (async () => {
+        const errors = [];
+        for (const assetPrefix of ["app-initial-", "setting-storage-"]) {
+          try {
+            const module = await loadCodexAppModule(assetPrefix);
+            const storage = codexSettingStorageFromModule(module);
+            if (storage) return storage;
+            errors.push(`${assetPrefix}: setting exports unavailable`);
+          } catch (error) {
+            errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+          }
+        }
+        throw new Error(`Codex setting-storage 接口不可用（${errors.join("; ")}）`);
+      })().catch((error) => {
+        codexSettingStoragePromise = null;
+        throw error;
+      });
     }
-    return module;
+    return await codexSettingStoragePromise;
   }
 
   async function getCodexServiceTierSetting() {
@@ -2238,9 +2281,10 @@
 
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    if (codexServiceTierDispatcherPatchPromise || Date.now() < codexServiceTierDispatcherPatchRetryAt) return;
     const loadDispatcher = async () => {
       const errors = [];
-      for (const assetPrefix of ["setting-storage-", "vscode-api-"]) {
+      for (const assetPrefix of ["app-initial-", "setting-storage-", "vscode-api-"]) {
         try {
           const module = await loadCodexAppModule(assetPrefix);
           const dispatcher = codexServiceTierDispatcherFromModule(module);
@@ -2267,15 +2311,19 @@
           return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
         };
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+        codexServiceTierDispatcherPatchRetryAt = 0;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
       } catch (error) {
+        codexServiceTierDispatcherPatchRetryAt = Date.now() + codexServiceTierDispatcherRetryDelayMs;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
       }
     };
-    void patch();
+    codexServiceTierDispatcherPatchPromise = patch().finally(() => {
+      codexServiceTierDispatcherPatchPromise = null;
+    });
   }
 
   async function loadBackendSettings() {
@@ -5036,6 +5084,7 @@
         }));
       },
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
+      settingStorageFromModule: codexSettingStorageFromModule,
     };
     return;
   }
@@ -8312,6 +8361,24 @@
     return null;
   }
 
+  function codexServiceTierBadgePlacementBeforeAnchor(anchor, boundary = null) {
+    if (!anchor?.parentElement) return null;
+    const fallback = { parent: anchor.parentElement, before: anchor };
+    let before = anchor;
+    let parent = anchor.parentElement;
+    for (let depth = 0; parent instanceof HTMLElement && depth < 6; depth += 1) {
+      if (boundary instanceof HTMLElement && parent !== boundary && !boundary.contains(parent)) break;
+      const display = getComputedStyle(parent).display;
+      if (["flex", "inline-flex", "grid", "inline-grid"].includes(display)) {
+        return { parent, before };
+      }
+      if (parent === boundary) break;
+      before = parent;
+      parent = parent.parentElement;
+    }
+    return fallback;
+  }
+
   function codexServiceTierModelButtonPlacement(root = document) {
     const scope = root?.querySelectorAll ? root : document;
     const buttons = Array.from(scope.querySelectorAll("button, [role='button']"))
@@ -8324,7 +8391,7 @@
         return (rightRect.bottom - leftRect.bottom) || (rightRect.left - leftRect.left);
       });
     const anchor = buttons.find((button) => button.getBoundingClientRect().bottom >= window.innerHeight * 0.35) || buttons[0];
-    return anchor?.parentElement ? { parent: anchor.parentElement, before: anchor } : null;
+    return codexServiceTierBadgePlacementBeforeAnchor(anchor, root instanceof HTMLElement ? root : null);
   }
 
   function codexServiceTierBadgeButtonCandidates(composer) {
@@ -8441,7 +8508,7 @@
 
   function codexServiceTierBadgePlacement(composer) {
     const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
-    if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
+    if (anchor?.parentElement) return codexServiceTierBadgePlacementBeforeAnchor(anchor, composer);
     const modelPlacement = codexServiceTierModelButtonPlacement(composer || document);
     if (modelPlacement?.parent) return modelPlacement;
     const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;

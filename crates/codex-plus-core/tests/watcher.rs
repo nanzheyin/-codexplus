@@ -1,7 +1,8 @@
 use codex_plus_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
+    process_ids_still_running, should_defer_existing_codex_activation,
+    should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[cfg(windows)]
@@ -129,6 +130,12 @@ fn stale_launcher_recovery_only_runs_when_codex_and_cdp_are_absent() {
     assert!(!should_recover_stale_launcher(true, false));
     assert!(!should_recover_stale_launcher(false, true));
     assert!(!should_recover_stale_launcher(true, true));
+}
+
+#[test]
+fn duplicate_launcher_waits_until_primary_launcher_starts_codex() {
+    assert!(should_defer_existing_codex_activation(false));
+    assert!(!should_defer_existing_codex_activation(true));
 }
 
 #[test]

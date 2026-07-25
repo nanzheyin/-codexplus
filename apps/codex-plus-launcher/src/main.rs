@@ -162,6 +162,19 @@ fn should_recover_stale_launcher(debug_port: u16) -> bool {
 }
 
 async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<()> {
+    let process_ids = codex_plus_core::watcher::find_codex_processes();
+    if codex_plus_core::watcher::should_defer_existing_codex_activation(!process_ids.is_empty()) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.startup_in_progress",
+            json!({
+                "guard_port": codex_plus_core::ports::launcher_guard_port(),
+                "debug_port": options.debug_port,
+                "helper_port": options.helper_port
+            }),
+        );
+        return Ok(());
+    }
+
     let hooks = LauncherHooks::default();
     let settings = hooks.load_settings().await?;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
@@ -176,7 +189,6 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     if settings.enhancements_enabled {
         hooks.start_helper(options.helper_port).await?;
     }
-    let process_ids = codex_plus_core::watcher::find_codex_processes();
     let mut activated = false;
     #[cfg(windows)]
     {
@@ -976,6 +988,7 @@ mod tests {
         assert!(source.contains("acquire_single_instance_guard(options.debug_port)?"));
         assert!(source.contains("launcher_guard_port"));
         assert!(source.contains("launcher.already_running"));
+        assert!(source.contains("launcher.startup_in_progress"));
     }
 
     #[test]

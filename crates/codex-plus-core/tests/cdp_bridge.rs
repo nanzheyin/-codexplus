@@ -896,6 +896,8 @@ fn injection_script_exposes_fast_service_tier_control() {
 
     assert!(script.contains("default-service-tier"));
     assert!(script.contains("setting-storage-"));
+    assert!(script.contains("app-initial-"));
+    assert!(script.contains("codexSettingStorageFromModule"));
     assert!(script.contains("codexAppAssetUrl"));
     assert!(script.contains("codexThreadServiceTierOverrides"));
     assert!(script.contains("setCodexThreadServiceTierMode"));
@@ -955,6 +957,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("toggleCodexServiceTierFromBadge"));
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
+    assert!(script.contains("codexServiceTierBadgePlacementBeforeAnchor"));
     assert!(script.contains("codexServiceTierBadgeFooterGroup"));
     assert!(script.contains("codexServiceTierLooksLikeModelButton"));
     assert!(script.contains("codexServiceTierComposerFromTextInput"));
@@ -976,7 +979,8 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
-    assert!(script.contains("[\"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("[\"app-initial-\", \"setting-storage-\", \"vscode-api-\"]"));
+    assert!(script.contains("codexServiceTierDispatcherRetryDelayMs"));
     assert!(script.contains("dispatcher export unavailable"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
@@ -999,8 +1003,10 @@ fn injection_script_discovers_vscode_api_asset_without_hardcoded_hash() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("loadCodexAppModule(\"vscode-api-\""));
+    assert!(script.contains("loadCodexAppModule(\"app-initial-\""));
     assert!(script.contains("codexAppAssetUrlFromScriptText"));
     assert!(script.contains("fetch(src"));
+    assert!(script.contains("(?:assets/)?"));
     assert!(!script.contains("vscode-api-Dc9pX2Bc.js"));
     assert!(!script.contains("import(\"./assets/vscode-api-"));
 }
@@ -1076,6 +1082,7 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
     assert_eq!(cases["dispatcherFromSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
+    assert_eq!(cases["settingStorageFromAppInitial"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1232,6 +1239,15 @@ class DispatcherClass {{
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+async function mockGetSetting(setting) {{
+  const response = await Promise.resolve({{ operation: "get-setting", value: "priority" }});
+  return response.value ?? setting.default;
+}}
+async function mockSetSetting(setting, value) {{
+  await Promise.resolve({{ operation: "set-setting", key: setting.key, value }});
+}}
+const appInitialStorage = api.settingStorageFromModule({{ jut: mockGetSetting, Put: mockSetSetting }});
+const settingStorageFromAppInitial = appInitialStorage?.n === mockGetSetting && appInitialStorage?.s === mockSetSetting;
 
 process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1249,6 +1265,7 @@ process.stdout.write(JSON.stringify({{
   solDescriptor,
   dispatcherFromSingleton,
   dispatcherFromClass,
+  settingStorageFromAppInitial,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
