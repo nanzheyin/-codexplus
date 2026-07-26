@@ -1115,7 +1115,7 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: true, petRealMouseLook: false, stepwise: false };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, upstreamWorktreeCreate: true, serviceTierControls: true, petRealMouseLook: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1129,7 +1129,6 @@
     conversationView: "codexAppConversationView",
     threadScrollRestore: "codexAppThreadScrollRestore",
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
-    nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
     stepwise: "codexAppStepwiseEnabled",
@@ -1163,7 +1162,6 @@
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         upstreamWorktreeCreate: false,
-        nativeMenuPlacement: false,
         serviceTierControls: false,
         petRealMouseLook: false,
         stepwise: false,
@@ -1351,6 +1349,7 @@
     status: "loading",
     serviceTier: null,
     message: "正在读取…",
+    readDegraded: false,
     fastTierValue: "priority",
     controlMode: "inherit",
     defaultMode: "inherit",
@@ -1365,8 +1364,12 @@
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
   let codexSettingStoragePromise = null;
+  let codexServiceTierReadPromise = null;
+  let codexServiceTierReadRetryTimer = null;
+  let codexServiceTierReadFailureLogged = false;
   let codexServiceTierDispatcherPatchPromise = null;
   let codexServiceTierDispatcherPatchRetryAt = 0;
+  const codexServiceTierReadRetryDelaysMs = [750, 2000, 5000, 15000, 30000];
   const codexModelCatalogCacheMs = 5 * 60 * 1000;
   let codexSignalRequestPromise = null;
   let codexCloudApiClientPromise = null;
@@ -1501,14 +1504,19 @@
         return "";
       }
     };
-    const getter = exports.find(([, value]) => {
+    const isGetter = (value) => {
       const source = functionSource(value);
       return source.includes("get-setting") && source.includes(".value") && source.includes(".default");
-    }) || (typeof module?.n === "function" ? ["n", module.n] : null);
-    const setter = exports.find(([, value]) => {
+    };
+    const isSetter = (value) => {
       const source = functionSource(value);
       return source.includes("set-setting") && source.includes("value") && value.length >= 2;
-    }) || (typeof module?.s === "function" ? ["s", module.s] : null);
+    };
+    const preferredExport = (names, predicate) => names
+      .map((name) => [name, module?.[name]])
+      .find(([, value]) => typeof value === "function" && predicate(value)) || null;
+    const getter = preferredExport(["jut", "n"], isGetter) || exports.find(([, value]) => isGetter(value)) || null;
+    const setter = preferredExport(["Put", "s"], isSetter) || exports.find(([, value]) => isSetter(value)) || null;
     if (!getter || !setter) return null;
     return { n: getter[1], s: setter[1], getExportName: getter[0], setExportName: setter[0] };
   }
@@ -1537,16 +1545,8 @@
   }
 
   async function getCodexServiceTierSetting() {
-    try {
-      const settingStorage = await codexSettingStorageModule();
-      return await settingStorage.n(codexDefaultServiceTierSetting);
-    } catch (error) {
-      if (typeof codexStateCall === "function") {
-        const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
-        return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
-      }
-      throw error;
-    }
+    const settingStorage = await codexSettingStorageModule();
+    return await settingStorage.n(codexDefaultServiceTierSetting);
   }
 
   function isFastServiceTierValue(value) {
@@ -1982,7 +1982,7 @@
     if (codexPlusBackendStatus.status === "checking" || (codexPlusBackendStatus.status === "ok" && !codexPlusBackendSettingsLoaded)) return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
     if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    const readDegraded = codexServiceTierState.readDegraded || codexServiceTierState.status === "failed";
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
@@ -1990,6 +1990,7 @@
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode);
     const title = [
       `服务模式：${scope}`,
+      ...(readDegraded ? ["原生默认档位暂不可读；当前按本地服务模式设置显示，并在后台重试。"] : []),
       "Standard：使用标准处理；不在请求上设置 priority。",
       `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
     ].join("\n");
@@ -2069,34 +2070,75 @@
     refreshCodexServiceTierBadges();
   }
 
-  async function loadCodexServiceTierState() {
+  function clearCodexServiceTierReadRetry() {
+    if (codexServiceTierReadRetryTimer) clearTimeout(codexServiceTierReadRetryTimer);
+    codexServiceTierReadRetryTimer = null;
+  }
+
+  function scheduleCodexServiceTierReadRetry(attempt) {
+    const delayMs = codexServiceTierReadRetryDelaysMs[attempt];
+    if (!Number.isFinite(delayMs)) return false;
+    clearCodexServiceTierReadRetry();
+    codexServiceTierReadRetryTimer = setTimeout(() => {
+      codexServiceTierReadRetryTimer = null;
+      void loadCodexServiceTierState(attempt + 1);
+    }, delayMs);
+    return true;
+  }
+
+  async function loadCodexServiceTierState(attempt = 0) {
     if (!codexPlusSettings().serviceTierControls) {
-      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
+      clearCodexServiceTierReadRetry();
+      codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用", readDegraded: false };
       refreshCodexServiceTierControls();
       return;
     }
-    codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
-    refreshCodexServiceTierControls();
-    try {
-      const serviceTier = await getCodexServiceTierSetting();
-      codexServiceTierState = {
-        ...codexServiceTierState,
-        status: "ok",
-        serviceTier,
-        message: serviceTierGlobalStatusMessage(serviceTier),
-      };
-    } catch (error) {
-      codexServiceTierState = {
-        ...codexServiceTierState,
-        status: "failed",
-        message: "读取失败",
-      };
-      sendCodexPlusDiagnostic("service_tier_read_failed", {
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-    } finally {
+    if (codexServiceTierReadPromise) return await codexServiceTierReadPromise;
+    if (attempt === 0 && codexServiceTierState.status !== "ok") {
+      codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
       refreshCodexServiceTierControls();
+    }
+    const read = (async () => {
+      try {
+        const serviceTier = await getCodexServiceTierSetting();
+        clearCodexServiceTierReadRetry();
+        codexServiceTierState = {
+          ...codexServiceTierState,
+          status: "ok",
+          serviceTier,
+          message: serviceTierGlobalStatusMessage(serviceTier),
+          readDegraded: false,
+        };
+        if (attempt > 0 || codexServiceTierReadFailureLogged) {
+          sendCodexPlusDiagnostic("service_tier_read_recovered", { attempt });
+        }
+        codexServiceTierReadFailureLogged = false;
+      } catch (error) {
+        const willRetry = scheduleCodexServiceTierReadRetry(attempt);
+        codexServiceTierState = {
+          ...codexServiceTierState,
+          status: "ok",
+          message: willRetry ? "原生档位暂不可读，正在重试…" : "原生档位暂不可读，按当前设置运行",
+          readDegraded: true,
+        };
+        if (!codexServiceTierReadFailureLogged || !willRetry) {
+          sendCodexPlusDiagnostic("service_tier_read_failed", {
+            attempt,
+            willRetry,
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+          codexServiceTierReadFailureLogged = true;
+        }
+      } finally {
+        refreshCodexServiceTierControls();
+      }
+    })();
+    codexServiceTierReadPromise = read;
+    try {
+      await read;
+    } finally {
+      if (codexServiceTierReadPromise === read) codexServiceTierReadPromise = null;
     }
   }
 
@@ -2313,6 +2355,7 @@
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         codexServiceTierDispatcherPatchRetryAt = 0;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
+        if (codexServiceTierState.readDegraded) void loadCodexServiceTierState(1);
       } catch (error) {
         codexServiceTierDispatcherPatchRetryAt = Date.now() + codexServiceTierDispatcherRetryDelayMs;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
@@ -2737,10 +2780,6 @@
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">原生菜单栏位置</div><div class="codex-plus-row-description">把 Codex++ 菜单插入顶部原生菜单栏；默认关闭以避免页面重渲染冲突。</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="nativeMenuPlacement"><span></span></button>
-            </div>
-            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
@@ -2925,7 +2964,6 @@
   }
 
   function findNativeMenuInsertionPoint() {
-    if (!codexPlusSettings().nativeMenuPlacement) return null;
     const header = document.querySelector(selectors.appHeader);
     const isIconOnlyButton = (button) => String(button.className || "").includes("aspect-square");
     const menuBar = Array.from(header?.querySelectorAll?.(selectors.nativeMenuBar) || [])
@@ -5073,6 +5111,11 @@
       },
       setServiceTierState: (state = {}) => {
         codexServiceTierState = { ...codexServiceTierState, ...state };
+      },
+      badgeState: () => codexServiceTierBadgeState(),
+      setBackendReady: () => {
+        codexPlusBackendStatus = { status: "ok", message: "" };
+        codexPlusBackendSettingsLoaded = true;
       },
       setThreadState: (state = {}) => {
         localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({

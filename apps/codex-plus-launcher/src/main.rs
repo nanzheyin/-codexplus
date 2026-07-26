@@ -176,7 +176,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     }
 
     let hooks = LauncherHooks::default();
-    let settings = hooks.load_settings().await?;
+    let mut settings = hooks.load_settings().await?;
+    settings.codex_app_native_menu_placement = true;
+    settings.codex_app_native_menu_localization = true;
+    let page_bridge_enabled =
+        settings.enhancements_enabled || settings.codex_app_native_menu_placement;
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     let launch_result = hooks
         .launch_codex(
@@ -186,7 +190,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             &settings.codex_extra_args,
         )
         .await;
-    if settings.enhancements_enabled {
+    if page_bridge_enabled {
         hooks.start_helper(options.helper_port).await?;
     }
     let mut activated = false;
@@ -199,7 +203,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             }
         }
     }
-    let injection_ready = if settings.enhancements_enabled {
+    let injection_ready = if page_bridge_enabled {
         hooks
             .ensure_injection(options.debug_port, options.helper_port, &app_dir)
             .await
@@ -211,7 +215,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             .start_bridge_watchdog(options.debug_port, options.helper_port, &app_dir)
             .await?;
         hooks.write_status("running").await;
-    } else if settings.enhancements_enabled {
+    } else if page_bridge_enabled {
         hooks.write_status("running_degraded").await;
     }
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(

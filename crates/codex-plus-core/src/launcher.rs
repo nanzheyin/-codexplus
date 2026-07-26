@@ -315,7 +315,11 @@ where
         launch_started_at,
         &mut phase_started_at,
     );
-    let settings = hooks.load_settings().await?;
+    let mut settings = hooks.load_settings().await?;
+    settings.codex_app_native_menu_placement = true;
+    settings.codex_app_native_menu_localization = true;
+    let page_bridge_enabled =
+        settings.enhancements_enabled || settings.codex_app_native_menu_placement;
     log_launch_phase("load_settings", launch_started_at, &mut phase_started_at);
     let app_dir = hooks.resolve_app_dir(options.app_dir.as_deref(), &settings)?;
     log_launch_phase("resolve_app_dir", launch_started_at, &mut phase_started_at);
@@ -417,7 +421,7 @@ where
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
-        if settings.enhancements_enabled || protocol_proxy_enabled {
+        if page_bridge_enabled || protocol_proxy_enabled {
             hooks.start_helper(helper_port).await?;
             helper_started = true;
             log_launch_phase("start_helper", launch_started_at, &mut phase_started_at);
@@ -439,7 +443,7 @@ where
         }
 
         let mut injection_degraded = false;
-        if settings.enhancements_enabled {
+        if page_bridge_enabled {
             let injection_ready = hooks
                 .ensure_injection(debug_port, helper_port, &app_dir)
                 .await;
@@ -484,7 +488,7 @@ where
             }
         }
 
-        if !settings.enhancements_enabled || !injection_degraded {
+        if !page_bridge_enabled || !injection_degraded {
             let status = launch_status(
                 "running",
                 "Codex++ launcher ready",
@@ -1064,9 +1068,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 "launcher.prelaunch",
             );
         }
-        let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
-        let native_menu_inspector_port =
-            native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
+        let native_menu_inspector_port = Some(select_native_menu_inspector_port(debug_port));
         let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);
         if cfg!(windows) {
             let activation = if let Some(inspector_port) = native_menu_inspector_port {

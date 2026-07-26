@@ -832,7 +832,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_passes_native_menu_localization_switch_to_codex_launch() {
+async fn launch_lifecycle_forces_native_menu_localization_when_legacy_setting_is_false() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -856,12 +856,9 @@ async fn launch_lifecycle_passes_native_menu_localization_switch_to_codex_launch
     .unwrap();
     handle.wait_for_codex_exit().await.unwrap();
 
-    assert!(
-        events
-            .lock()
-            .unwrap()
-            .contains(&"launch:9229:native-menu-off".to_string())
-    );
+    let events = events.lock().unwrap();
+    assert!(events.contains(&"launch:9229".to_string()));
+    assert!(!events.contains(&"launch:9229:native-menu-off".to_string()));
 }
 
 #[tokio::test]
@@ -906,7 +903,7 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled() {
+async fn launch_lifecycle_keeps_native_menu_bridge_when_enhancements_are_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -936,9 +933,12 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
+            "start-helper:57321",
             "launch:9229",
+            "inject:9229:57321",
             "status:running",
             "wait-codex",
+            "shutdown-helper:57321",
         ]
     );
 }
@@ -1295,7 +1295,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
     let before_stop = events.lock().unwrap().clone();
     assert!(before_stop.contains(&"select-helper:58000".to_string()));
     assert!(before_stop.contains(&"start-helper:57321".to_string()));
-    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+    assert!(before_stop.contains(&"inject:9229:57321".to_string()));
 
     handle.wait_for_codex_exit().await.unwrap();
 

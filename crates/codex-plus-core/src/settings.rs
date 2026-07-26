@@ -262,6 +262,7 @@ pub struct BackendSettings {
     pub codex_app_thread_scroll_restore: bool,
     #[serde(rename = "codexAppUpstreamWorktreeCreate", default = "default_true")]
     pub codex_app_upstream_worktree_create: bool,
+    // 保留旧字段用于配置兼容；运行时固定开启，不再提供独立开关。
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
     #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
@@ -1308,6 +1309,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
     settings.codex_logs_db_max_mb = normalize_codex_logs_db_max_mb(settings.codex_logs_db_max_mb);
+    settings.codex_app_native_menu_placement = true;
+    settings.codex_app_native_menu_localization = true;
     settings
 }
 
@@ -2073,6 +2076,7 @@ experimental_bearer_token = "sk-existing""#
             "codexAppSessionDelete": false,
             "codexAppConversationView": true,
             "codexAppThreadIdBadge": true,
+            "codexAppNativeMenuPlacement": false,
             "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
             "codexAppPetRealMouseLook": true,
@@ -2091,7 +2095,8 @@ experimental_bearer_token = "sk-existing""#
         assert!(!updated.codex_app_session_delete);
         assert!(updated.codex_app_conversation_view);
         assert!(updated.codex_app_thread_id_badge);
-        assert!(!updated.codex_app_native_menu_localization);
+        assert!(updated.codex_app_native_menu_placement);
+        assert!(updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_app_pet_real_mouse_look);
         assert!(updated.codex_goals_enabled);

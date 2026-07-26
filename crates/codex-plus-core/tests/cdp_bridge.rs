@@ -981,9 +981,23 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("fast"));
     assert!(script.contains("[\"app-initial-\", \"setting-storage-\", \"vscode-api-\"]"));
     assert!(script.contains("codexServiceTierDispatcherRetryDelayMs"));
+    assert!(script.contains("codexServiceTierReadRetryDelaysMs"));
+    assert!(script.contains("service_tier_read_recovered"));
+    assert!(script.contains("void loadCodexServiceTierState(attempt + 1)"));
+    assert!(!script.contains("label: \"?\""));
     assert!(script.contains("dispatcher export unavailable"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
+}
+
+#[test]
+fn injection_script_keeps_native_menu_placement_always_enabled() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("function findNativeMenuInsertionPoint()"));
+    assert!(!script.contains("data-codex-plus-setting=\"nativeMenuPlacement\""));
+    assert!(!script.contains("if (!codexPlusSettings().nativeMenuPlacement) return null;"));
+    assert!(!script.contains("nativeMenuPlacement: \"codexAppNativeMenuPlacement\""));
 }
 
 #[test]
@@ -1083,6 +1097,8 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["dispatcherFromSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
     assert_eq!(cases["settingStorageFromAppInitial"], true);
+    assert_eq!(cases["degradedBadge"]["tier"], "standard");
+    assert_eq!(cases["degradedBadge"]["label"], "standard");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -1239,6 +1255,13 @@ class DispatcherClass {{
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
+async function misleadingGetSetting(setting) {{
+  const response = await Promise.resolve({{ operation: "get-setting", value: "standard" }});
+  return response.value ?? setting.default;
+}}
+async function misleadingSetSetting(setting, value) {{
+  await Promise.resolve({{ operation: "set-setting", key: setting.key, value }});
+}}
 async function mockGetSetting(setting) {{
   const response = await Promise.resolve({{ operation: "get-setting", value: "priority" }});
   return response.value ?? setting.default;
@@ -1246,8 +1269,24 @@ async function mockGetSetting(setting) {{
 async function mockSetSetting(setting, value) {{
   await Promise.resolve({{ operation: "set-setting", key: setting.key, value }});
 }}
-const appInitialStorage = api.settingStorageFromModule({{ jut: mockGetSetting, Put: mockSetSetting }});
+const appInitialStorage = api.settingStorageFromModule({{
+  aaa: misleadingGetSetting,
+  zzz: misleadingSetSetting,
+  jut: mockGetSetting,
+  Put: mockSetSetting,
+}});
 const settingStorageFromAppInitial = appInitialStorage?.n === mockGetSetting && appInitialStorage?.s === mockSetSetting;
+api.setBackendReady();
+api.setServiceTierState({{
+  status: "failed",
+  readDegraded: true,
+  serviceTier: null,
+  effectiveMode: "standard",
+  controlMode: "inherit",
+  threadMode: "inherit",
+  defaultMode: "inherit",
+}});
+const degradedBadge = api.badgeState();
 
 process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1266,6 +1305,7 @@ process.stdout.write(JSON.stringify({{
   dispatcherFromSingleton,
   dispatcherFromClass,
   settingStorageFromAppInitial,
+  degradedBadge,
 }}));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())

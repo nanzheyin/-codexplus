@@ -180,7 +180,8 @@ export const EN_PLAIN: Record<string, string> = {
   "对话与输入": "Conversation and input",
   "调整会话管理、输入行为和对话阅读体验。": "Adjust session management, input behavior and conversation reading experience.",
   "界面与启动": "Interface and startup",
-  "控制语言、启动速度和 Codex 原生界面调整。": "Control language, startup speed and Codex native UI adjustments.",
+  "控制语言和启动速度；原生菜单栏集成与汉化固定启用。":
+    "Control language and startup speed. Native menu bar integration and localization are always enabled.",
   "0 表示关闭；超限时会在启动 Codex 前删除最旧日志并压缩数据库，不影响会话、消息和 rollout。":
     "0 disables the limit. When exceeded, the oldest logs are deleted and the database is compacted before Codex starts; sessions, messages and rollouts are not affected.",
   "远程 Git": "Remote Git",
