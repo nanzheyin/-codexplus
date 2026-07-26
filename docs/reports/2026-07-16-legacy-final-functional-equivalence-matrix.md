@@ -91,7 +91,7 @@ waived        用户明确同意不迁移，并附决策记录
 | SES-009 | 项目归属和项目间移动 | renderer project move | session/project | 必须迁移 | not_started |
 | SES-010 | 不复制 Codex 原生会话库，以其为唯一事实来源 | 已确认架构决策 | session adapter | 必须保持 | not_started |
 
-## 5. MCP、Skills、Plugins 与用户脚本
+## 5. MCP、Skills 与 Plugins
 
 | ID | Legacy 用户能力 | 主要证据 | Deck 目标模块 | 要求 | Deck 状态 |
 | --- | --- | --- | --- | --- | --- |
@@ -102,9 +102,6 @@ waived        用户明确同意不迁移，并附决策记录
 | CTX-005 | 供应商切换时合并全局 context | relay context tests / provider switch tests | application policy | 必须迁移 | verified |
 | CTX-006 | 插件市场状态和本地修复 | `plugin_marketplace_status` / `repair_plugin_marketplace` | plugin adapter | 必须迁移 | verified |
 | CTX-007 | 远程插件市场状态和修复 | `remote_plugin_marketplace_status` / `repair_remote_plugin_marketplace` | plugin adapter | 必须迁移 | verified |
-| SCR-001 | 用户脚本清单、市场刷新和安装 | `refresh_script_market` / `install_market_script` / local HTTP tests | script packages | 必须迁移 | verified |
-| SCR-002 | 用户脚本启停、删除和元数据 | `set_user_script_enabled` / `delete_user_script` / bridge routes | script packages | 必须迁移 | verified |
-| SCR-003 | 用户脚本热重载设置 | `userScriptHotReload` / reload bridge tests | enhancement runtime | 必须迁移 | verified |
 
 ## 6. Codex Renderer 增强
 
@@ -158,7 +155,7 @@ waived        用户明确同意不迁移，并附决策记录
 | IMP-001 | 只读发现 `.codex-session-delete` 和 Legacy schema | `legacy_import.rs` read-only preview tests / `preview_legacy_import` command fixture / maintenance UI entry | 必须实现 | in_progress |
 | IMP-002 | 总预览和冲突报告 | `LegacyImportPreview` lists automatic, confirmation, secret, excluded and conflict groups; maintenance UI displays summary/evidence | 必须实现 | in_progress |
 | IMP-003 | 自动转换非敏感设置 | `apply_legacy_import_transaction` imports only selected `nonSensitiveConfig` and strips secret-bearing fields | 必须实现 | in_progress |
-| IMP-004 | 可执行内容逐项确认 | Preview marks MCP/plugins/user scripts/external paths as confirmation-required; secure confirmation UI/commit still pending | 必须实现 | in_progress |
+| IMP-004 | 可执行内容逐项确认 | Preview marks MCP/plugins/external paths as confirmation-required; secure confirmation UI/commit still pending | 必须实现 | in_progress |
 | IMP-005 | secrets 逐项确认并写入平台安全存储 | Preview detects secrets without exposing values; apply leaves selected secrets as `pendingConfirmation`; secure-store commit still pending | 必须实现 | in_progress |
 | IMP-006 | Codex 原生会话不复制 | Preview excludes `sessions`、`state*.sqlite` and `session_index.jsonl`; adapter proof still pending | 必须实现 | in_progress |
 | IMP-007 | 快照、临时事务区、原子提交和失败回滚 | `prepare_legacy_import_transaction` writes preview/ledger/rollback manifest and `rollback-settings.json`; `apply`/`rollback` are limited to app-state transaction dirs; rollback verifies backup sha256 before restore; live three rollback drills still pending | 必须实现 | in_progress |
@@ -193,10 +190,6 @@ load_provider_sync_targets
 preview_session_index_cleanup
 apply_session_index_cleanup
 sync_providers_now
-refresh_script_market
-install_market_script
-set_user_script_enabled
-delete_user_script
 open_external_url
 install_entrypoints
 uninstall_entrypoints

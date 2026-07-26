@@ -87,7 +87,7 @@
 - 在线更新源、项目主页和 Release 下载入口切换到 `xiamingjie123/-codexplus`，后续版本由本仓库 GitHub Release 发布。
 - 为全部已配置模型预生成 catalog，补充 GPT-5.6 元数据、Fast 服务兼容与自定义模型上下文窗口支持。
 - 新增按模型配置图片与推理能力、纯文本模型图片处理和 VL 视觉模型中转。
-- 优化 CDP 事件驱动就绪检测、用户脚本热重载和 goal resume guard。
+- 优化 CDP 事件驱动就绪检测和 goal resume guard。
 - 修复供应商同步后的幽灵任务索引、新建 V2 WebP 桌宠兼容及多项供应商切换稳定性问题。
 - macOS DMG 创建增加有限次数重试，避免 GitHub runner 的瞬时 `Resource busy` 中断发行。
 - 验证通过：更新源专项测试、安装器测试、TypeScript 检查、Vite 生产构建和 `cargo test --workspace`。
@@ -150,7 +150,6 @@
 - 修复 `model_reasoning_effort`、`plan_mode_reasoning_effort` 重复写入导致 TOML 解析失败的问题。
 - 修复重复插件表、空配置体、布尔值解析等导致配置文件解析失败的问题。
 - 优化供应商详情页布局，保持顶部返回和提示区域固定，增大默认窗口尺寸并减少顶部缝隙。
-- 移除脚本安装时的 checksum 阻断，避免市场脚本校验不一致导致安装失败。
 - 清理关于页和状态页中不需要展示的登录、当前供应商、配置文件路径等信息。
 - 调整提示信息居中显示，避免遮挡重启按钮。
 - 更新讨论群二维码、README 说明和 macOS DMG 打包脚本。

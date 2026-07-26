@@ -986,6 +986,9 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("void loadCodexServiceTierState(attempt + 1)"));
     assert!(!script.contains("label: \"?\""));
     assert!(script.contains("dispatcher export unavailable"));
+    assert!(script.contains("codexServiceTierDispatcherRetryDelaysMs"));
+    assert!(script.contains("if (!codexPlusSettings().serviceTierControls) return;"));
+    assert!(script.contains("if (!currentSignature)"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
 }

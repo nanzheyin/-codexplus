@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -8,10 +7,8 @@ use anyhow::Context;
 use codex_plus_core::install::SILENT_BINARY;
 use codex_plus_core::launcher::DefaultLaunchHooks;
 use codex_plus_core::models::{DeleteResult, SessionRef};
-use codex_plus_core::script_market::{self, MarketScript, ScriptMarketManifest};
 use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
 use codex_plus_core::status::{LaunchStatus, StatusStore};
-use codex_plus_core::user_scripts::UserScriptManager;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -64,7 +61,6 @@ pub struct OverviewPayload {
 pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
-    pub user_scripts: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,7 +204,6 @@ pub struct RelaySwitchPayload {
     pub settings: BackendSettings,
     pub relay: RelayPayload,
     pub settings_path: String,
-    pub user_scripts: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,7 +337,6 @@ pub struct OAuthProfilePayload {
     pub profile_id: Option<String>,
     pub settings: BackendSettings,
     pub settings_path: String,
-    pub user_scripts: Value,
 }
 
 static LOCAL_RELAY_RUNTIME: OnceLock<Arc<DefaultLaunchHooks>> = OnceLock::new();
@@ -780,7 +774,6 @@ fn oauth_profile_payload(state: &str, profile_id: Option<String>) -> OAuthProfil
         settings_path: codex_plus_core::paths::default_settings_path()
             .to_string_lossy()
             .to_string(),
-        user_scripts: user_script_inventory(),
     }
 }
 
@@ -854,12 +847,6 @@ pub struct DiagnosticsPayload {
 pub struct WatcherPayload {
     pub enabled: bool,
     pub disabled_flag: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ScriptMarketPayload {
-    pub market: Value,
-    pub user_scripts: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1052,7 +1039,6 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
             SettingsPayload {
                 settings,
                 settings_path,
-                user_scripts: user_script_inventory(),
             },
         ),
         Err(error) => failed(
@@ -1060,7 +1046,6 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
             SettingsPayload {
                 settings: BackendSettings::default(),
                 settings_path,
-                user_scripts: user_script_inventory(),
             },
         ),
     }
@@ -1103,7 +1088,6 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
                 settings_path: codex_plus_core::paths::default_settings_path()
                     .to_string_lossy()
                     .to_string(),
-                user_scripts: user_script_inventory(),
             },
         ),
     }
@@ -2007,111 +1991,6 @@ fn persist_provider_sync_selection(provider: &str) {
 }
 
 #[tauri::command]
-pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    refresh_script_market_from_url(script_market::DEFAULT_MARKET_INDEX_URL).await
-}
-
-async fn refresh_script_market_from_url(index_url: &str) -> CommandResult<ScriptMarketPayload> {
-    match script_market::fetch_market_manifest(index_url).await {
-        Ok(manifest) => ok(
-            "脚本市场已刷新。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
-        ),
-        Err(error) => failed(
-            &format!("脚本市场加载失败：{error}"),
-            failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
-        ),
-    }
-}
-
-#[tauri::command]
-pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayload> {
-    install_market_script_from_url(script_market::DEFAULT_MARKET_INDEX_URL, &id).await
-}
-
-async fn install_market_script_from_url(
-    index_url: &str,
-    id: &str,
-) -> CommandResult<ScriptMarketPayload> {
-    let trimmed = id.trim();
-    if trimmed.is_empty() {
-        return failed(
-            "脚本 id 不能为空。",
-            failed_script_market_payload("脚本 id 不能为空。"),
-        );
-    }
-    let manifest = match script_market::fetch_market_manifest(index_url).await {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            return failed(
-                &format!("脚本市场加载失败：{error}"),
-                failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
-            );
-        }
-    };
-    let Some(script) = manifest.scripts.iter().find(|script| script.id == trimmed) else {
-        return failed(
-            "市场清单中未找到该脚本。",
-            script_market_payload_from_manifest(&manifest, "failed", "市场清单中未找到该脚本。"),
-        );
-    };
-    let manager = default_user_script_manager();
-    match script_market::install_market_script(&manager, script).await {
-        Ok(()) => ok(
-            "脚本已安装。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本已安装。"),
-        ),
-        Err(error) => failed(
-            &format!("安装脚本失败：{error}"),
-            script_market_payload_from_manifest(
-                &manifest,
-                "failed",
-                &format!("安装脚本失败：{error}"),
-            ),
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return failed("脚本 key 不能为空。", fallback_settings_payload());
-    }
-    let manager = default_user_script_manager();
-    match manager.set_script_enabled(trimmed, enabled) {
-        Ok(_) => settings_payload(
-            if enabled {
-                "脚本已启用。"
-            } else {
-                "脚本已禁用。"
-            },
-            "脚本启停失败",
-        ),
-        Err(error) => failed(
-            &format!("脚本启停失败：{error}"),
-            fallback_settings_payload(),
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return failed("脚本 key 不能为空。", fallback_settings_payload());
-    }
-    let manager = default_user_script_manager();
-    match manager.delete_user_script(trimmed) {
-        Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
-        Err(error) => failed(
-            &format!("脚本删除失败：{error}"),
-            fallback_settings_payload(),
-        ),
-    }
-}
-
-#[tauri::command]
 pub fn open_external_url(url: String) -> CommandResult<Value> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -2499,7 +2378,6 @@ pub fn reset_settings() -> CommandResult<SettingsPayload> {
                 settings_path: codex_plus_core::paths::default_settings_path()
                     .to_string_lossy()
                     .to_string(),
-                user_scripts: user_script_inventory(),
             },
         ),
     }
@@ -2524,7 +2402,6 @@ pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
                 settings_path: codex_plus_core::paths::default_settings_path()
                     .to_string_lossy()
                     .to_string(),
-                user_scripts: user_script_inventory(),
             },
         ),
     }
@@ -3861,7 +3738,6 @@ fn relay_switch_payload(
         settings_path: codex_plus_core::paths::default_settings_path()
             .to_string_lossy()
             .to_string(),
-        user_scripts: user_script_inventory(),
     }
 }
 
@@ -3983,14 +3859,12 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         Ok(settings) => Ok(SettingsPayload {
             settings,
             settings_path,
-            user_scripts: user_script_inventory(),
         }),
         Err(error) => Err((
             error,
             SettingsPayload {
                 settings: BackendSettings::default(),
                 settings_path,
-                user_scripts: user_script_inventory(),
             },
         )),
     }
@@ -4002,7 +3876,6 @@ fn fallback_settings_payload() -> SettingsPayload {
         settings_path: codex_plus_core::paths::default_settings_path()
             .to_string_lossy()
             .to_string(),
-        user_scripts: user_script_inventory(),
     }
 }
 
@@ -4037,128 +3910,6 @@ fn resolve_legacy_import_transaction_root(transaction_root: &str) -> anyhow::Res
     }
 
     Ok(canonical_requested)
-}
-
-fn user_script_inventory() -> Value {
-    default_user_script_manager()
-        .inventory()
-        .unwrap_or_else(|error| {
-            json!({
-                "enabled": true,
-                "scripts": [],
-                "error": error.to_string()
-            })
-        })
-}
-
-fn failed_script_market_payload(message: &str) -> ScriptMarketPayload {
-    ScriptMarketPayload {
-        market: json!({
-            "status": "failed",
-            "message": message,
-            "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
-            "updatedAt": "",
-            "scripts": []
-        }),
-        user_scripts: user_script_inventory(),
-    }
-}
-
-fn script_market_payload_from_manifest(
-    manifest: &ScriptMarketManifest,
-    status: &str,
-    message: &str,
-) -> ScriptMarketPayload {
-    let user_scripts = user_script_inventory();
-    let installed = installed_market_versions(&user_scripts);
-    let scripts = manifest
-        .scripts
-        .iter()
-        .map(|script| market_script_payload(script, &installed))
-        .collect::<Vec<_>>();
-    ScriptMarketPayload {
-        market: json!({
-            "status": status,
-            "message": message,
-            "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
-            "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
-            "scripts": scripts
-        }),
-        user_scripts,
-    }
-}
-
-fn installed_market_versions(user_scripts: &Value) -> BTreeMap<String, String> {
-    user_scripts
-        .get("scripts")
-        .and_then(Value::as_array)
-        .map(|scripts| {
-            scripts
-                .iter()
-                .filter_map(|script| {
-                    let id = script.get("market_id").and_then(Value::as_str)?;
-                    if id.is_empty() {
-                        return None;
-                    }
-                    let version = script
-                        .get("version")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    Some((id.to_string(), version))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, String>) -> Value {
-    let installed_version = installed.get(&script.id).cloned().unwrap_or_default();
-    let is_installed = !installed_version.is_empty();
-    json!({
-        "id": script.id,
-        "name": script.name,
-        "description": script.description,
-        "version": script.version,
-        "author": script.author,
-        "tags": script.tags,
-        "homepage": script.homepage,
-        "script_url": script.script_url,
-        "sha256": script.sha256,
-        "installed": is_installed,
-        "installedVersion": installed_version,
-        "updateAvailable": is_installed && installed.get(&script.id).map(|version| version != &script.version).unwrap_or(false)
-    })
-}
-
-fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
 }
 
 fn diagnostics_report() -> String {
@@ -4332,41 +4083,6 @@ mod tests {
                 match &self.previous {
                     Some(value) => std::env::set_var("CODEX_HOME", value),
                     None => std::env::remove_var("CODEX_HOME"),
-                }
-            }
-        }
-    }
-
-    struct UserScriptsEnvGuard {
-        previous_appdata: Option<OsString>,
-        previous_xdg_config_home: Option<OsString>,
-    }
-
-    impl UserScriptsEnvGuard {
-        fn set(root: &Path) -> Self {
-            let previous_appdata = std::env::var_os("APPDATA");
-            let previous_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
-            unsafe {
-                std::env::set_var("APPDATA", root);
-                std::env::set_var("XDG_CONFIG_HOME", root);
-            }
-            Self {
-                previous_appdata,
-                previous_xdg_config_home,
-            }
-        }
-    }
-
-    impl Drop for UserScriptsEnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.previous_appdata {
-                    Some(value) => std::env::set_var("APPDATA", value),
-                    None => std::env::remove_var("APPDATA"),
-                }
-                match &self.previous_xdg_config_home {
-                    Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                    None => std::env::remove_var("XDG_CONFIG_HOME"),
                 }
             }
         }
@@ -6815,97 +6531,5 @@ model_reasoning_effort = "high"
         assert!(repair.payload.skill_count > 0);
         let config = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
         assert!(config.contains("[marketplaces.openai-curated-remote]"));
-    }
-
-    #[test]
-    fn script_market_refresh_from_local_http_manifest_uses_remote_payload() {
-        let manifest_body = serde_json::json!({
-            "version": 2,
-            "updated_at": "2026-07-18T12:00:00Z",
-            "scripts": [
-                {
-                    "id": "demo",
-                    "name": "Demo",
-                    "description": "Demo script",
-                    "version": "1.0.0",
-                    "author": "Codex",
-                    "tags": ["utility", "demo"],
-                    "homepage": "https://example.com/demo",
-                    "script_url": "https://example.com/demo.js",
-                    "sha256": ""
-                }
-            ]
-        })
-        .to_string();
-        let (manifest_url, manifest_server) = spawn_http_server("application/json", manifest_body);
-
-        let result = tauri::async_runtime::block_on(refresh_script_market_from_url(&manifest_url));
-
-        manifest_server.join().unwrap();
-        assert_eq!(result.status, "ok");
-        assert_eq!(result.message, "脚本市场已刷新。");
-        assert_eq!(result.payload.market["status"], "ok");
-        assert_eq!(result.payload.market["updatedAt"], "2026-07-18T12:00:00Z");
-        assert_eq!(result.payload.market["scripts"][0]["id"], "demo");
-        assert_eq!(result.payload.market["scripts"][0]["name"], "Demo");
-        assert_eq!(result.payload.market["scripts"][0]["installed"], false);
-        assert_eq!(
-            result.payload.market["scripts"][0]["updateAvailable"],
-            false
-        );
-    }
-
-    #[test]
-    fn script_market_install_from_local_http_manifest_downloads_and_records_metadata() {
-        let _lock = test_env_lock();
-        let temp = tempfile::tempdir().unwrap();
-        let appdata = temp.path().join("appdata");
-        std::fs::create_dir_all(&appdata).unwrap();
-        let _env_guard = UserScriptsEnvGuard::set(&appdata);
-        let (script_url, script_server) =
-            spawn_http_server("text/javascript", "window.demo = true;".to_string());
-        let manifest_body = serde_json::json!({
-            "version": 2,
-            "updated_at": "2026-07-18T12:00:00Z",
-            "scripts": [
-                {
-                    "id": "demo",
-                    "name": "Demo",
-                    "description": "Demo script",
-                    "version": "1.0.0",
-                    "author": "Codex",
-                    "tags": ["utility"],
-                    "homepage": "https://example.com/demo",
-                    "script_url": script_url,
-                    "sha256": ""
-                }
-            ]
-        })
-        .to_string();
-        let (manifest_url, manifest_server) = spawn_http_server("application/json", manifest_body);
-
-        let result =
-            tauri::async_runtime::block_on(install_market_script_from_url(&manifest_url, "demo"));
-
-        manifest_server.join().unwrap();
-        script_server.join().unwrap();
-        assert_eq!(result.status, "ok");
-        assert_eq!(result.message, "脚本已安装。");
-        let config_dir = appdata.join("Codex++");
-        assert_eq!(
-            std::fs::read_to_string(config_dir.join("user_scripts").join("market-demo.js"))
-                .unwrap(),
-            "window.demo = true;"
-        );
-        let inventory = result.payload.user_scripts;
-        assert_eq!(inventory["enabled"], true);
-        assert_eq!(inventory["scripts"][0]["key"], "user:market-demo.js");
-        assert_eq!(inventory["scripts"][0]["market_id"], "demo");
-        assert_eq!(inventory["scripts"][0]["installed"], true);
-        assert_eq!(inventory["scripts"][0]["source_url"], script_url);
-        assert_eq!(
-            inventory["scripts"][0]["homepage"],
-            "https://example.com/demo"
-        );
     }
 }

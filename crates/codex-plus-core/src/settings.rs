@@ -228,8 +228,6 @@ pub struct BackendSettings {
     pub enhancements_enabled: bool,
     #[serde(rename = "computerUseGuardEnabled", default)]
     pub computer_use_guard_enabled: bool,
-    #[serde(rename = "codexAppUserScriptHotReload", default)]
-    pub codex_app_user_script_hot_reload: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
@@ -435,7 +433,6 @@ impl Default for BackendSettings {
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
-            codex_app_user_script_hot_reload: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_plugin_auto_expand: true,
             codex_app_model_whitelist_unlock: true,
@@ -824,8 +821,19 @@ impl SettingsStore {
             }
         };
 
+        let mut raw = serde_json::from_str::<Value>(&contents).unwrap_or_default();
+        let removed = if let Value::Object(object) = &mut raw {
+            remove_removed_setting_keys(object)
+        } else {
+            false
+        };
+        if removed {
+            let bytes = serde_json::to_vec_pretty(&raw)?;
+            atomic_write(&self.path, &bytes)?;
+        }
+
         Ok(normalize_settings_config_sections(
-            serde_json::from_str(&contents).unwrap_or_default(),
+            serde_json::from_value(raw).unwrap_or_default(),
         ))
     }
 
@@ -872,10 +880,23 @@ impl SettingsStore {
         };
 
         match serde_json::from_str::<Value>(&contents) {
-            Ok(Value::Object(map)) => Ok(map),
+            Ok(Value::Object(mut map)) => {
+                remove_removed_setting_keys(&mut map);
+                Ok(map)
+            }
             Ok(_) | Err(_) => Ok(settings_to_object(&BackendSettings::default())),
         }
     }
+}
+
+const REMOVED_SETTING_KEYS: &[&str] = &["codexAppUserScriptHotReload"];
+
+fn remove_removed_setting_keys(object: &mut Map<String, Value>) -> bool {
+    REMOVED_SETTING_KEYS
+        .iter()
+        .filter_map(|key| object.remove(*key))
+        .count()
+        > 0
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
@@ -952,7 +973,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     {
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
-    merge_bool_setting(target, source, "codexAppUserScriptHotReload");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
@@ -1466,7 +1486,6 @@ mod tests {
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
-        assert!(!settings.codex_app_user_script_hot_reload);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.builtin_plugin_guard_enabled());
         assert!(settings.codex_app_plugin_auto_expand);
@@ -1573,16 +1592,6 @@ mod tests {
 
         assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
         assert!(legacy_settings.codex_app_plugin_auto_expand);
-    }
-
-    #[test]
-    fn settings_deserialize_user_script_hot_reload_defaults_to_false_and_reads_value() {
-        let legacy: BackendSettings = serde_json::from_str("{}").unwrap();
-        assert!(!legacy.codex_app_user_script_hot_reload);
-
-        let enabled: BackendSettings =
-            serde_json::from_str(r#"{"codexAppUserScriptHotReload":true}"#).unwrap();
-        assert!(enabled.codex_app_user_script_hot_reload);
     }
 
     #[test]
@@ -1986,6 +1995,27 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
+    fn settings_store_load_removes_removed_user_script_setting() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "codexAppUserScriptHotReload": true,
+  "enhancementsEnabled": true
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.enhancements_enabled);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(saved.get("codexAppUserScriptHotReload").is_none());
+        assert_eq!(saved["enhancementsEnabled"], json!(true));
+    }
+
+    #[test]
     fn settings_store_save_load_roundtrip_uses_custom_path() {
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("nested").join("settings.json"));
@@ -2202,22 +2232,6 @@ experimental_bearer_token = "sk-existing""#
 
         assert_eq!(updated.launch_mode, LaunchMode::Relay);
         assert_eq!(saved["launchMode"], json!("relay"));
-    }
-
-    #[test]
-    fn settings_store_update_persists_user_script_hot_reload() {
-        let dir = temp_dir();
-        let store = SettingsStore::new(dir.join("settings.json"));
-
-        let updated = store
-            .update(json!({"codexAppUserScriptHotReload": true}))
-            .unwrap();
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
-                .unwrap();
-
-        assert!(updated.codex_app_user_script_hot_reload);
-        assert_eq!(saved["codexAppUserScriptHotReload"], json!(true));
     }
 
     #[test]

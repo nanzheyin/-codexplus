@@ -55,7 +55,6 @@ import {
   Moon,
   Network,
   PanelTopOpen,
-  Power,
   PowerOff,
   Plus,
   Play,
@@ -164,7 +163,6 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
-  codexAppUserScriptHotReload: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
@@ -314,7 +312,6 @@ type RelayListSort = "manual" | "name";
 type RelayWorkspaceSection = "providers" | "localRelay" | "localFiles";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
-const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -322,27 +319,9 @@ const emptyContextSelection = (): RelayContextSelection => ({
   plugins: [],
 });
 
-type UserScriptInventory = {
-  enabled?: boolean;
-  scripts?: Array<{
-    key: string;
-    name: string;
-    source: string;
-    enabled: boolean;
-    status: string;
-    error: string;
-    market_id?: string;
-    version?: string;
-    installed?: boolean;
-    source_url?: string;
-    homepage?: string;
-  }>;
-};
-
 type SettingsResult = CommandResult<{
   settings: BackendSettings;
   settings_path: string;
-  user_scripts: UserScriptInventory;
 }>;
 
 type RelayResult = CommandResult<{
@@ -410,7 +389,6 @@ type ExtractRelayCommonConfigResult = CommandResult<{
 type RelaySwitchResult = CommandResult<{
   settings: BackendSettings;
   settingsPath: string;
-  user_scripts: unknown;
   relay: RelayPayload;
 }>;
 
@@ -507,7 +485,6 @@ type OAuthProfileResult = CommandResult<{
   profileId: string | null;
   settings: BackendSettings;
   settingsPath: string;
-  userScripts: UserScriptInventory;
 }>;
 
 type LegacyImportSchema = {
@@ -741,32 +718,6 @@ type UpdateResult = CommandResult<{
   progress?: number;
 }>;
 
-type ScriptMarketItem = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  tags: string[];
-  homepage: string;
-  script_url: string;
-  sha256: string;
-  installed: boolean;
-  installedVersion: string;
-  updateAvailable: boolean;
-};
-
-type ScriptMarketResult = CommandResult<{
-  market: {
-    status: string;
-    message: string;
-    indexUrl: string;
-    updatedAt: string;
-    scripts: ScriptMarketItem[];
-  };
-  user_scripts: UserScriptInventory;
-}>;
-
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
@@ -797,36 +748,11 @@ function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
   return [...labels, ...current].join(" / ") || t("发现");
 }
 
-function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
-  if (!current) return current;
-  const installed = new Map(
-    (userScripts.scripts ?? [])
-      .filter((script) => script.market_id)
-      .map((script) => [script.market_id || "", script.version || ""]),
-  );
-  return {
-    ...current,
-    user_scripts: userScripts,
-    market: {
-      ...current.market,
-      scripts: current.market.scripts.map((script) => {
-        const installedVersion = installed.get(script.id) || "";
-        return {
-          ...script,
-          installed: Boolean(installedVersion),
-          installedVersion,
-          updateAvailable: Boolean(installedVersion) && installedVersion !== script.version,
-        };
-      }),
-    },
-  };
-}
-
 type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "userScripts" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
@@ -835,7 +761,6 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("工具与插件"), icon: Network },
   { id: "enhance", label: t("Codex 增强"), icon: Hammer },
-  { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
   { id: "maintenance", label: t("安装维护"), icon: Wrench },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
@@ -843,7 +768,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 
 const routeGroups: Array<{ label: string; items: Route[] }> = [
   { label: t("工作台"), items: ["overview", "relay", "sessions", "context"] },
-  { label: t("扩展"), items: ["enhance", "userScripts"] },
+  { label: t("扩展"), items: ["enhance"] },
   { label: t("系统"), items: ["maintenance", "about", "settings"] },
 ];
 
@@ -857,7 +782,6 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
-  codexAppUserScriptHotReload: false,
   codexAppPluginMarketplaceUnlock: true,
   codexAppPluginAutoExpand: true,
   codexAppModelWhitelistUnlock: true,
@@ -965,7 +889,6 @@ export function App() {
     percent: 0,
     message: t("尚未运行安装包更新。"),
   });
-  const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9229",
@@ -1039,45 +962,6 @@ export function App() {
       return normalized;
     }
     return null;
-  };
-
-  const refreshScriptMarket = async (silent = false) => {
-    const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
-    if (result) {
-      setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本市场"), result, { silentSuccess: true });
-    }
-  };
-
-  const installMarketScript = async (id: string) => {
-    const result = await run(() => call<ScriptMarketResult>("install_market_script", { id }));
-    if (result) {
-      setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice(t("脚本市场"), result);
-    }
-  };
-
-  const setUserScriptEnabled = async (key: string, enabled: boolean) => {
-    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
-    if (result) {
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
-    }
-  };
-
-  const deleteUserScript = async (key: string) => {
-    const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
-    const name = script?.name || key;
-    if (!window.confirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]))) return;
-    const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
-    if (result) {
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
-    }
   };
 
   const refreshRelay = async (silent = false) => {
@@ -1198,7 +1082,6 @@ export function App() {
       message: result.message,
       settings: normalized,
       settings_path: result.settingsPath,
-      user_scripts: result.userScripts,
     });
     setSettingsForm(normalized);
   };
@@ -1455,10 +1338,6 @@ export function App() {
       await refreshLiveContextEntries(true);
     }
     if (next === "settings") await refreshSettings(true);
-    if (next === "userScripts") {
-      await refreshSettings(true);
-      await refreshScriptMarket(true);
-    }
     if (next === "about") {
       await refreshOverview(true);
       await refreshLogs(true);
@@ -2100,7 +1979,6 @@ export function App() {
         message: result.message,
         settings: selectedSettings,
         settings_path: result.settingsPath,
-        user_scripts: result.user_scripts as UserScriptInventory,
       });
       setSettingsForm(selectedSettings);
       setRelay({
@@ -2364,10 +2242,6 @@ export function App() {
       rollbackLegacyImportTransaction,
       refreshLiveContextEntries,
       syncLiveContextEntries,
-      refreshScriptMarket,
-      installMarketScript,
-      setUserScriptEnabled,
-      deleteUserScript,
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
@@ -2564,7 +2438,6 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -2680,10 +2553,6 @@ type Actions = {
   rollbackLegacyImportTransaction: (transactionRoot: string) => Promise<LegacyImportRollbackCommandResult | null>;
   refreshLiveContextEntries: (silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshScriptMarket: () => Promise<void>;
-  installMarketScript: (id: string) => Promise<void>;
-  setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
-  deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
@@ -3694,7 +3563,7 @@ function EnhanceScreen({
   return (
     <div className="deck-page deck-settings-page enhance-deck-page">
       <Panel className="enhance-master-panel">
-        <CardHead title={t("Codex 增强")} detail={t("会话删除、导出、项目移动和用户脚本等界面能力")} />
+        <CardHead title={t("Codex 增强")} detail={t("会话删除、导出、项目移动和页面增强能力")} />
         <CardContent>
           <div className="enhance-master-grid">
           <label className="switch-row enhance-master-switch">
@@ -3767,7 +3636,6 @@ function EnhanceScreen({
             <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
               <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示永久删除按钮；删除后不可撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
               <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-              <FeatureToggle title={t("用户脚本热重载")} detail={t("默认关闭；开启后每 1 秒检查脚本和配置变化并自动 reload，可能增加资源消耗或导致脚本重复执行。需重启 Codex 才生效。")} checked={form.codexAppUserScriptHotReload} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUserScriptHotReload", value)} />
               <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
               <FeatureToggle title={t("会话项目移动")} detail={t("把会话移动到普通对话或其他本地项目。")} checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
               <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
@@ -3844,100 +3712,6 @@ function EnhanceScreen({
           <Save className="h-4 w-4" />
           {t("保存增强设置")}
         </Button>
-      </div>
-    </div>
-  );
-}
-
-function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
-  const inventory = settings?.user_scripts;
-  const scripts = inventory?.scripts ?? [];
-  const marketScripts = market?.market.scripts ?? [];
-  const installedCount = marketScripts.filter((script) => script.installed).length;
-  const updateCount = marketScripts.filter((script) => script.updateAvailable).length;
-  const enabledLocalCount = scripts.filter((script) => script.enabled).length;
-  const [scriptView, setScriptView] = useState<"market" | "local">("market");
-  const [scriptSearch, setScriptSearch] = useState("");
-  const [marketFilter, setMarketFilter] = useState<"all" | "available" | "installed" | "updates">("all");
-  const [localFilter, setLocalFilter] = useState<"all" | "enabled" | "disabled">("all");
-  const normalizedScriptSearch = scriptSearch.trim().toLocaleLowerCase();
-  const visibleMarketScripts = marketScripts.filter((script) => {
-    if (marketFilter === "available" && script.installed) return false;
-    if (marketFilter === "installed" && !script.installed) return false;
-    if (marketFilter === "updates" && !script.updateAvailable) return false;
-    if (!normalizedScriptSearch) return true;
-    return [script.name, script.description, script.author, script.tags.join(" ")].join(" ").toLocaleLowerCase().includes(normalizedScriptSearch);
-  });
-  const visibleLocalScripts = scripts.filter((script) => {
-    if (localFilter === "enabled" && !script.enabled) return false;
-    if (localFilter === "disabled" && script.enabled) return false;
-    if (!normalizedScriptSearch) return true;
-    return [script.name, script.key, script.source, script.status].join(" ").toLocaleLowerCase().includes(normalizedScriptSearch);
-  });
-  return (
-    <div className="deck-page script-deck-page">
-      <Panel className="script-control-panel">
-        <CardHead title={t("脚本市场")} detail={market?.market.message ?? t("尚未刷新")} />
-        <CardContent>
-          <div aria-label={t("脚本视图")} className="deck-tabs script-view-tabs" role="tablist">
-            <button aria-selected={scriptView === "market"} className={scriptView === "market" ? "active" : ""} onClick={() => setScriptView("market")} role="tab" type="button">
-              <Download className="h-4 w-4" />
-              <span><strong>{t("市场脚本")}</strong><small>{tf("{0} 个，可更新 {1} 个", [marketScripts.length, updateCount])}</small></span>
-            </button>
-            <button aria-selected={scriptView === "local"} className={scriptView === "local" ? "active" : ""} onClick={() => setScriptView("local")} role="tab" type="button">
-              <FileCode2 className="h-4 w-4" />
-              <span><strong>{t("本地脚本")}</strong><small>{tf("{0} 个，已启用 {1} 个", [scripts.length, enabledLocalCount])}</small></span>
-            </button>
-          </div>
-          <div className="deck-list-toolbar script-list-toolbar">
-            <label className="deck-search-field">
-              <Search className="h-4 w-4" aria-hidden="true" />
-              <Input aria-label={t("搜索脚本")} onChange={(event) => setScriptSearch(event.currentTarget.value)} placeholder={t("搜索名称、作者或标签...")} type="search" value={scriptSearch} />
-            </label>
-            <label className="deck-toolbar-select">
-              <Filter className="h-4 w-4" aria-hidden="true" />
-              {scriptView === "market" ? (
-                <select aria-label={t("市场脚本筛选")} onChange={(event) => setMarketFilter(event.currentTarget.value as typeof marketFilter)} value={marketFilter}>
-                  <option value="all">{t("全部状态")}</option>
-                  <option value="available">{t("未安装")}</option>
-                  <option value="installed">{t("已安装")}</option>
-                  <option value="updates">{t("可更新")}</option>
-                </select>
-              ) : (
-                <select aria-label={t("本地脚本筛选")} onChange={(event) => setLocalFilter(event.currentTarget.value as typeof localFilter)} value={localFilter}>
-                  <option value="all">{t("全部状态")}</option>
-                  <option value="enabled">{t("已启用")}</option>
-                  <option value="disabled">{t("已禁用")}</option>
-                </select>
-              )}
-            </label>
-            <div className="deck-toolbar-actions">
-              <Button aria-label={scriptView === "market" ? t("刷新市场") : t("刷新本地")} onClick={() => void (scriptView === "market" ? actions.refreshScriptMarket() : actions.refreshCurrent())} size="icon" title={scriptView === "market" ? t("刷新市场") : t("刷新本地")} variant="outline"><RefreshCw className="h-4 w-4" /></Button>
-              <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} variant="secondary"><ExternalLink className="h-4 w-4" />{t("投稿")}</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      <section className="script-workspace">
-        <div className="script-workspace-head">
-          <div>
-            <strong>{scriptView === "market" ? t("市场脚本") : t("本地脚本")}</strong>
-            <span>{scriptView === "market" ? (market?.market.updatedAt ? tf("清单更新时间：{0}", [market.market.updatedAt]) : t("从 GitHub 静态清单加载")) : t("内置、手动和市场安装脚本")}</span>
-          </div>
-          <span>{scriptView === "market" ? tf("显示 {0} / {1}", [visibleMarketScripts.length, marketScripts.length]) : tf("显示 {0} / {1}", [visibleLocalScripts.length, scripts.length])}</span>
-        </div>
-        {scriptView === "market" ? (
-          visibleMarketScripts.length ? <div className="script-market-grid script-market-scroll">{visibleMarketScripts.map((script) => <MarketScriptCard key={script.id} script={script} actions={actions} />)}</div> : <div className="deck-empty-state"><Search className="h-5 w-5" /><strong>{t("没有匹配的市场脚本")}</strong><span>{market?.status === "failed" ? market.message : t("调整搜索词或筛选条件。")}</span></div>
-        ) : (
-          <div className="script-local-table">
-            <div className="script-local-table-head"><span>{t("名称")}</span><span>{t("来源")}</span><span>{t("状态")}</span><span>{t("运行状态")}</span><span>{t("操作")}</span></div>
-            <div className="script-local-table-body">{visibleLocalScripts.length ? visibleLocalScripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="deck-empty-state"><FileCode2 className="h-5 w-5" /><strong>{t("没有匹配的本地脚本")}</strong><span>{t("调整搜索词或筛选条件。")}</span></div>}</div>
-          </div>
-        )}
-      </section>
-      <div className="deck-save-bar script-status-bar">
-        <div><span className={inventory?.enabled === false ? "" : "ready"} aria-hidden="true" /><div><strong>{inventory?.enabled === false ? t("本地脚本整体已关闭") : t("本地脚本整体已启用")}</strong><small>{tf("已安装 {0} 个市场脚本", [installedCount])}</small></div></div>
-        <Button onClick={() => void actions.refreshScriptMarket()} variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新全部")}</Button>
       </div>
     </div>
   );
@@ -5696,40 +5470,6 @@ function SortableRelayProfileCard({
   );
 }
 
-function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actions: Actions }) {
-  const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
-  return (
-    <div className="script-market-card">
-      <div className="script-market-title">
-        <div>
-          <strong>{script.name}</strong>
-          <span>{script.author || t("未知作者")}</span>
-        </div>
-        <UiBadge variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
-      </div>
-      <p className="script-market-description">{script.description || t("暂无描述。")}</p>
-      <div className="script-market-tags">
-        <span className="script-market-tag">v{script.version}</span>
-        {script.tags.map((tag) => (
-          <span className="script-market-tag" key={tag}>{tag}</span>
-        ))}
-      </div>
-      <div className="script-market-actions">
-        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
-          <Download className="h-4 w-4" />
-          {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
-        </Button>
-        {script.homepage ? (
-          <Button onClick={() => void actions.openExternalUrl(script.homepage)} size="sm" variant="secondary">
-            <ExternalLink className="h-4 w-4" />
-            {t("主页")}
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function RelayProfileDetail({
   profile,
   relayFiles,
@@ -7104,7 +6844,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>{t("兼容增强")}</strong>
-        <span>{t("适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。")}</span>
+        <span>{t("适合官方登录或官方混入 API Key；保留会话删除、导出和项目移动，关闭插件市场相关增强。")}</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
@@ -7455,31 +7195,6 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
-  const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
-  const canDelete = script.source === "user";
-  return (
-    <div className="table-row">
-      <span>{script.name}</span>
-      <span>{source}</span>
-      <span>{script.enabled ? t("启用") : t("关闭")}</span>
-      <span>{script.status}</span>
-      <div className="script-row-actions">
-        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
-          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-          {script.enabled ? t("禁用") : t("启用")}
-        </Button>
-        {canDelete ? (
-          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
-            <Trash2 className="h-4 w-4" />
-            {t("删除")}
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
@@ -7490,8 +7205,7 @@ function routeSubtitle(route: Route) {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP、Skills、Plugins"),
-    enhance: t("会话删除、导出、项目移动和脚本能力"),
-    userScripts: t("内置和用户自定义脚本清单"),
+    enhance: t("会话删除、导出、项目移动和页面增强能力"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),

@@ -808,19 +808,6 @@ fn scan_root_entries(source_root: &Path, preview: &mut LegacyImportPreview) -> a
                 "runtime logs, caches, locks, ports, pid files and temporary files are not imported",
                 size_bytes,
             );
-        } else if name.eq_ignore_ascii_case("user_scripts")
-            || name.eq_ignore_ascii_case("user_scripts.json")
-        {
-            add_item(
-                preview,
-                "executableOrExternal",
-                &path,
-                "",
-                "contextPackages.userScripts",
-                "requiresUserConfirmation",
-                true,
-                "canExecuteUserCode",
-            );
         } else {
             add_excluded(
                 preview,
@@ -1069,7 +1056,6 @@ const NON_SENSITIVE_SETTING_KEYS: &[&str] = &[
     "relayProfilesEnabled",
     "enhancementsEnabled",
     "computerUseGuardEnabled",
-    "codexAppUserScriptHotReload",
     "codexAppPluginMarketplaceUnlock",
     "codexAppPluginAutoExpand",
     "codexAppModelWhitelistUnlock",

@@ -8,9 +8,6 @@ use serde_json::{Value, json};
 use crate::models::{DeleteResult, DeleteStatus, ExportResult, ExportStatus, SessionRef};
 use crate::settings::{BackendSettings, SettingsStore};
 use crate::status::StatusStore;
-use crate::user_scripts::UserScriptManager;
-
-pub type UserScriptEvaluator = Arc<dyn Fn(&str, &str) -> anyhow::Result<Value> + Send + Sync>;
 pub type DevtoolsOpener = Arc<dyn Fn(&str) -> anyhow::Result<()> + Send + Sync>;
 
 #[derive(Clone)]
@@ -69,11 +66,6 @@ pub trait BridgeSettingsService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeRuntimeService: Send + Sync {
-    async fn user_script_inventory(&self) -> anyhow::Result<Value>;
-    async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value>;
-    async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value>;
-    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value>;
-    async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
     async fn open_devtools(&self) -> anyhow::Result<Value>;
     async fn open_manager(&self) -> anyhow::Result<Value>;
     async fn backend_status(&self) -> anyhow::Result<Value>;
@@ -127,35 +119,6 @@ pub async fn handle_bridge_request(
         "/settings/set" => {
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
         }
-        "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
-        "/user-scripts/set-enabled" => {
-            let enabled = payload
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            ctx.runtime.set_user_scripts_enabled(enabled).await
-        }
-        "/user-scripts/set-script-enabled" => {
-            let key = payload
-                .get("key")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let enabled = payload
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            ctx.runtime.set_user_script_enabled(key, enabled).await
-        }
-        "/user-scripts/delete" => {
-            let key = payload
-                .get("key")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            ctx.runtime.delete_user_script(key).await
-        }
-        "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager().await,
         "/backend/status" => ctx.runtime.backend_status().await,
@@ -308,9 +271,6 @@ impl BridgeSettingsService for CoreSettingsService {
 pub struct CoreRuntimeService {
     debug_port: u16,
     status_store: StatusStore,
-    user_scripts: Option<UserScriptManager>,
-    websocket_url: Option<String>,
-    user_script_evaluator: Option<UserScriptEvaluator>,
     devtools_opener: Option<DevtoolsOpener>,
     devtools_target_id: Option<String>,
 }
@@ -320,27 +280,9 @@ impl CoreRuntimeService {
         Self {
             debug_port,
             status_store,
-            user_scripts: None,
-            websocket_url: None,
-            user_script_evaluator: None,
             devtools_opener: None,
             devtools_target_id: None,
         }
-    }
-
-    pub fn with_user_scripts(mut self, user_scripts: UserScriptManager) -> Self {
-        self.user_scripts = Some(user_scripts);
-        self
-    }
-
-    pub fn with_websocket_url(mut self, websocket_url: impl Into<String>) -> Self {
-        self.websocket_url = Some(websocket_url.into());
-        self
-    }
-
-    pub fn with_user_script_evaluator(mut self, evaluator: UserScriptEvaluator) -> Self {
-        self.user_script_evaluator = Some(evaluator);
-        self
     }
 
     pub fn with_devtools_opener(mut self, opener: DevtoolsOpener) -> Self {
@@ -356,61 +298,6 @@ impl CoreRuntimeService {
 
 #[async_trait]
 impl BridgeRuntimeService for CoreRuntimeService {
-    async fn user_script_inventory(&self) -> anyhow::Result<Value> {
-        match &self.user_scripts {
-            Some(user_scripts) => user_scripts.inventory(),
-            None => Ok(empty_user_script_inventory()),
-        }
-    }
-
-    async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
-        match &self.user_scripts {
-            Some(user_scripts) => {
-                user_scripts.set_global_enabled(enabled)?;
-                self.reload_user_scripts().await
-            }
-            None => {
-                let mut inventory = empty_user_script_inventory();
-                inventory["enabled"] = json!(enabled);
-                Ok(inventory)
-            }
-        }
-    }
-
-    async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        match &self.user_scripts {
-            Some(user_scripts) => {
-                user_scripts.set_script_enabled(&key, enabled)?;
-                self.reload_user_scripts().await
-            }
-            None => Ok(empty_user_script_inventory()),
-        }
-    }
-
-    async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        match &self.user_scripts {
-            Some(user_scripts) => {
-                user_scripts.delete_user_script(&key)?;
-                self.reload_user_scripts().await
-            }
-            None => Ok(empty_user_script_inventory()),
-        }
-    }
-
-    async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        if let (Some(user_scripts), Some(websocket_url), Some(evaluator)) = (
-            &self.user_scripts,
-            self.websocket_url.as_deref(),
-            &self.user_script_evaluator,
-        ) {
-            let bundle = user_scripts.build_enabled_bundle()?;
-            if !bundle.trim().is_empty() {
-                evaluator(websocket_url, &bundle)?;
-            }
-        }
-        self.user_script_inventory().await
-    }
-
     async fn open_devtools(&self) -> anyhow::Result<Value> {
         let target_id = self
             .devtools_target_id
@@ -739,11 +626,4 @@ pub fn devtools_url(debug_port: u16, target_id: &str) -> String {
     format!(
         "http://127.0.0.1:{debug_port}/devtools/inspector.html?ws=127.0.0.1:{debug_port}/devtools/page/{target_id}"
     )
-}
-
-fn empty_user_script_inventory() -> Value {
-    json!({
-        "enabled": true,
-        "scripts": []
-    })
 }

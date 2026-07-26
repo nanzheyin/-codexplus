@@ -326,6 +326,7 @@
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "5";
   const codexServiceTierDispatcherRetryDelayMs = 5000;
+  const codexServiceTierDispatcherRetryDelaysMs = [codexServiceTierDispatcherRetryDelayMs, 15000, 30000, 60000];
   const codexAppServerModelRequestPatchVersion = "1";
   const codexProjectlessMainWindowVersion = "1";
   const codexProjectlessMainWindowSetting = { key: "hotkey-window-projectless-default-enabled", default: false };
@@ -1083,15 +1084,6 @@
       .codex-plus-backend-label { color: #a1a1aa; font-size: 12px; }
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
-      .codex-plus-user-script-warning { margin-top: 4px; color: #fbbf24; font-size: 12px; }
-      .codex-plus-user-script-dirs { margin-top: 6px; color: #a1a1aa; font-size: 11px; line-height: 1.4; word-break: break-all; }
-      .codex-plus-user-script-list { margin-top: 8px; display: grid; gap: 6px; }
-      .codex-plus-user-script-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
-      .codex-plus-user-script-name { font-size: 12px; }
-      .codex-plus-user-script-meta { margin-top: 2px; color: #a1a1aa; font-size: 11px; }
-      .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
-      .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
-      .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
       .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
       .codex-plus-ad-section:first-of-type { margin-top: 0; }
@@ -1369,6 +1361,7 @@
   let codexServiceTierReadFailureLogged = false;
   let codexServiceTierDispatcherPatchPromise = null;
   let codexServiceTierDispatcherPatchRetryAt = 0;
+  let codexServiceTierDispatcherRetryCount = 0;
   const codexServiceTierReadRetryDelaysMs = [750, 2000, 5000, 15000, 30000];
   const codexModelCatalogCacheMs = 5 * 60 * 1000;
   let codexSignalRequestPromise = null;
@@ -2322,6 +2315,7 @@
   }
 
   function installCodexServiceTierDispatcherPatch() {
+    if (!codexPlusSettings().serviceTierControls) return;
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
     if (codexServiceTierDispatcherPatchPromise || Date.now() < codexServiceTierDispatcherPatchRetryAt) return;
     const loadDispatcher = async () => {
@@ -2354,10 +2348,17 @@
         };
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         codexServiceTierDispatcherPatchRetryAt = 0;
+        codexServiceTierDispatcherRetryCount = 0;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
         if (codexServiceTierState.readDegraded) void loadCodexServiceTierState(1);
       } catch (error) {
-        codexServiceTierDispatcherPatchRetryAt = Date.now() + codexServiceTierDispatcherRetryDelayMs;
+        const retryIndex = Math.min(
+          codexServiceTierDispatcherRetryCount,
+          codexServiceTierDispatcherRetryDelaysMs.length - 1,
+        );
+        const retryDelayMs = codexServiceTierDispatcherRetryDelaysMs[retryIndex];
+        codexServiceTierDispatcherRetryCount += 1;
+        codexServiceTierDispatcherPatchRetryAt = Date.now() + retryDelayMs;
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
@@ -2430,7 +2431,6 @@
     scan();
   }
 
-  let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
 
@@ -2513,41 +2513,6 @@
     if (window.__codexPlusBackendHeartbeat) return;
     window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 30000);
     checkBackendStatus();
-  }
-
-  function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
-  }
-
-  function renderUserScripts() {
-    const enabledToggle = document.querySelector("[data-codex-user-scripts-enabled]");
-    if (enabledToggle) enabledToggle.dataset.enabled = String(!!codexPlusUserScripts.enabled);
-    const dirs = document.querySelector("[data-codex-user-script-dirs]");
-    if (dirs) dirs.textContent = `内置：${codexPlusUserScripts.builtin_dir || "未找到"}  用户：${codexPlusUserScripts.user_dir || "未找到"}`;
-    const list = document.querySelector("[data-codex-user-script-list]");
-    if (!list) return;
-    if (!codexPlusUserScripts.scripts?.length) {
-      list.textContent = "未发现用户脚本。";
-      return;
-    }
-    list.innerHTML = codexPlusUserScripts.scripts.map((script) => `
-      <div class="codex-plus-user-script-item">
-        <div>
-          <div class="codex-plus-user-script-name">${escapeHtml(script.name || script.key)}</div>
-          <div class="codex-plus-user-script-meta">${script.source === "builtin" ? "内置" : "用户"} · ${userScriptStatusLabel(script.status)}</div>
-          ${script.error ? `<div class="codex-plus-user-script-error">${escapeHtml(script.error)}</div>` : ""}
-        </div>
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(script.key)}" data-enabled="${String(!!script.enabled)}"><span></span></button>
-      </div>
-    `).join("");
-  }
-
-  async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
-    const result = await postJson(path, payload);
-    if (result?.scripts) {
-      codexPlusUserScripts = result;
-      renderUserScripts();
-    }
   }
 
   const codexPlusAdsUrl = "/ads";
@@ -2663,7 +2628,6 @@
     document.querySelectorAll("[data-codex-plus-panel]").forEach((panel) => {
       panel.hidden = panel.getAttribute("data-codex-plus-panel") !== tab;
     });
-    if (tab === "userScripts") loadUserScripts();
   }
 
   function openCodexPlusModal() {
@@ -2679,7 +2643,6 @@
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="support" data-active="false">请作者喝咖啡</button>
         </div>
@@ -2776,11 +2739,11 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、项目路径移动等全部页面能力。"}</div></div>
+              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出和项目移动，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、项目路径移动等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
+              <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便排查页面增强问题。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
             <div class="codex-plus-row">
@@ -2797,21 +2760,6 @@
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
-            <div class="codex-plus-row" data-codex-user-scripts-section="true">
-              <div>
-                <div class="codex-plus-row-title">用户脚本</div>
-                <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
-                <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
-                <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
-              </div>
-              <div class="codex-plus-user-script-actions">
-                <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
-                <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
-              </div>
             </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
@@ -2889,11 +2837,6 @@
         window.open(issueUrl, "_blank");
         return;
       }
-      const userScriptsEnabled = target?.closest("[data-codex-user-scripts-enabled]");
-      if (userScriptsEnabled) {
-        loadUserScripts("/user-scripts/set-enabled", { enabled: userScriptsEnabled.dataset.enabled !== "true" });
-        return;
-      }
       if (target?.closest("[data-codex-service-tier-inherit]")) {
         setCodexServiceTierControlMode("inherit");
         return;
@@ -2920,15 +2863,6 @@
       }
       if (target?.closest("[data-codex-service-tier-thread-fast]")) {
         setCodexThreadServiceTierMode("fast");
-        return;
-      }
-      const userScriptToggle = target?.closest("[data-codex-user-script-key]");
-      if (userScriptToggle) {
-        loadUserScripts("/user-scripts/set-script-enabled", { key: userScriptToggle.getAttribute("data-codex-user-script-key"), enabled: userScriptToggle.dataset.enabled !== "true" });
-        return;
-      }
-      if (target?.closest("[data-codex-user-scripts-reload]")) {
-        loadUserScripts("/user-scripts/reload", {});
         return;
       }
       if (target?.closest("[data-codex-upstream-worktree-open]")) {
@@ -2960,7 +2894,6 @@
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
     void loadCodexServiceTierState();
-    loadUserScripts();
   }
 
   function findNativeMenuInsertionPoint() {
@@ -3562,6 +3495,12 @@
 
   function schedulePluginAutoExpand(force = false) {
     if (!codexPlusSettings().pluginAutoExpand) return;
+    if (!force && !pluginAutoExpandPageLooksRelevant()) {
+      clearTimeout(window.__codexPluginAutoExpandTimer);
+      window.__codexPluginAutoExpandTimer = null;
+      window.__codexPluginAutoExpandLastSignature = "";
+      return;
+    }
     if (window.__codexPluginAutoExpandRunning && !force) return;
     clearTimeout(window.__codexPluginAutoExpandTimer);
     window.__codexPluginAutoExpandTimer = setTimeout(() => runPluginAutoExpand(force), force ? 30 : 180);
@@ -3570,6 +3509,11 @@
   function runPluginAutoExpand(force = false) {
     if (!codexPlusSettings().pluginAutoExpand) return;
     const currentSignature = pluginAutoExpandSignature();
+    if (!currentSignature) {
+      window.__codexPluginAutoExpandRunning = false;
+      window.__codexPluginAutoExpandLastSignature = "";
+      return;
+    }
     if (!force && currentSignature && currentSignature === window.__codexPluginAutoExpandLastSignature) return;
     window.__codexPluginAutoExpandLastSignature = currentSignature;
     window.__codexPluginAutoExpandRunning = true;

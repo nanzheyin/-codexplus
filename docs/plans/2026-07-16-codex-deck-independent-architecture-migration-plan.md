@@ -79,11 +79,11 @@ Codex Deck
 
 已确认以开始重建前的本地最终 Legacy 版本作为功能等价基线。正式开发前必须将其冻结为可复现证据，包括唯一 commit、Legacy final tag、安装包、版本、默认设置和真实业务链路。基线盘点至少覆盖：
 
-- Manager 当前可进入的工作台、供应商/中转、会话、上下文、增强、Zed、用户脚本、维护、关于和设置页面；
+- Manager 当前可进入的工作台、供应商/中转、会话、上下文、增强、Zed、维护、关于和设置页面；
 - Codex App 检测、启动、停止、更新、watcher、环境检查和平台安装能力；
 - 供应商切换、模型目录、上下文窗口、协议适配、代理、聚合和轮换；
 - 会话查询、搜索、导出、删除、项目归属、provider 修复和索引维护；
-- MCP、skills、plugins、用户脚本和市场相关能力；
+- MCP、skills、plugins 和插件市场相关能力；
 - 当前可以启用的 renderer 增强及其设置、关闭和异常降级行为；
 - 当前用户数据、供应商资料、通用配置、增强设置和必要状态的一次性导入。
 
@@ -117,7 +117,7 @@ Codex Deck
 - Codex App 启动、进程、安装和更新；
 - CDP、bridge、路由和 renderer 注入；
 - 供应商、模型目录、配置改写和协议代理；
-- 会话数据库、本地存储、插件、脚本和 Zed；
+- 会话数据库、本地存储、插件和 Zed；
 - 设置、状态、诊断日志、端口和平台集成。
 
 其中 `launcher.rs`、`protocol_proxy.rs`、`relay_config.rs`、`settings.rs` 均已接近或超过十万字节。Manager 的 Tauri 命令层又直接调用大量 `codex_plus_core::*` API，使 UI、应用用例、存储和外部适配器难以独立变化。
@@ -365,7 +365,7 @@ feature manifest
 
 ### 7.5 Context Packages
 
-MCP、skills、plugins 和用户脚本统一建模为可安装的上下文包，但保留各自格式 adapter。安装过程必须可预览、校验来源、记录版本并可回滚。
+MCP、skills 和 plugins 统一建模为可安装的上下文包，但保留各自格式 adapter。安装过程必须可预览、校验来源、记录版本并可回滚。
 
 ### 7.6 Settings、Secrets 与 Observability
 
@@ -419,7 +419,7 @@ Codex Deck 不写入 `~/.codex-session-delete`。新数据应进入平台标准�
 | 导入组 | 内容 | 默认行为 |
 | --- | --- | --- |
 | 非敏感配置 | 供应商资料、模型与上下文设置、通用配置、增强开关、界面偏好 | 在总预览中列出后自动转换 |
-| 可执行或外部影响项 | MCP、skills、plugins、用户脚本、外部路径、Zed 等集成、环境修改 | 逐项显示来源、目标和风险，经用户确认后导入 |
+| 可执行或外部影响项 | MCP、skills、plugins、外部路径、Zed 等集成、环境修改 | 逐项显示来源、目标和风险，经用户确认后导入 |
 | 敏感信息 | API Key、bearer token、登录凭据及其他 secrets | 不静默复制；逐项确认后写入平台安全存储，普通日志和设置 JSON 不保留明文 |
 
 Codex 原生会话继续以 Codex 自己的数据库和文件为唯一事实来源。Codex Deck 通过新的 Session Adapter 读取它们，不复制整份会话数据库，也不创建会与 Codex 原生数据分叉的 Deck 会话副本。
@@ -488,7 +488,7 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 | `bridge.rs` / `cdp.rs` / `routes.rs` | one-shot CDP + RPC Gateway | 不迁移长期 bridge 结构 |
 | `renderer-inject.js` | Renderer Feature Registry | 按 feature 拆分并要求 dispose |
 | `codex_sqlite.rs` / local storage | Session / Codex Storage Adapter | schema 转换隔离在 adapter |
-| `plugin_marketplace.rs` / scripts | Context Packages | 先定义来源、安装、升级和回滚模型 |
+| `plugin_marketplace.rs` | Context Packages | 先定义来源、安装、升级和回滚模型 |
 | `diagnostic_log.rs` / status | Observability | 异步有界日志、轮转和聚合指标 |
 | install / update / platform code | Platform Adapters | 按 Windows、macOS 分开实现和验收 |
 | Manager `App.tsx` / Tauri commands | Feature UI + RPC Client | UI 不再直接调用底层文件和数据库实现 |
@@ -561,7 +561,7 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 ### 阶段 6：Context、Proxy 与扩展能力
 
 - 协议代理、聚合和轮换。
-- MCP、skills、plugins、用户脚本和市场。
+- MCP、skills、plugins 和插件市场。
 - Zed、移动中继等能力必须在冻结清单时明确“迁移”或“不迁移”，不能以未定义的后续版本规避一次性交付范围。
 
 退出条件：每个被吸收能力都通过 Deck 功能 intake、许可和真实链路验收；未被选择的上游功能不构成阻塞。
@@ -624,7 +624,7 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 - 真实 Codex App 启停、供应商切换和请求成功。
 - 真实会话查询、导出、删除及恢复验证完成。
 - Windows 和 macOS 必须分别完成真实安装、启动、更新、卸载、与 Legacy 并存以及 Codex App 完整调用链路验收，CI 打包不能代替实际运行。
-- Provider、Model Catalog、代理、Context、renderer 增强、Zed、用户脚本和维护功能按冻结矩阵逐项走真实链路。
+- Provider、Model Catalog、代理、Context、renderer 增强、Zed 和维护功能按冻结矩阵逐项走真实链路。
 - 自动化测试只作为证据之一，不能替代真实页面、文件、SQLite、日志和完整调用链路。
 
 ### 12.6 缺陷与正式切换门槛
@@ -698,7 +698,7 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 ### D-008：Legacy 数据导入范围
 
 - 状态：**已确认**
-- 决策：采用完整引导式导入。非敏感配置经总预览后自动转换；插件、脚本、外部路径和集成逐项确认；凭据逐项确认后进入平台安全存储；Codex 原生会话数据库不复制。
+- 决策：采用完整引导式导入。非敏感配置经总预览后自动转换；插件、外部路径和集成逐项确认；凭据逐项确认后进入平台安全存储；Codex 原生会话数据库不复制。
 - 约束：导入前创建快照，失败恢复本次导入前状态，旧数据不删除；Legacy 日志、缓存、进程状态和临时文件不导入。
 
 ### D-009：Legacy 回滚维护期限

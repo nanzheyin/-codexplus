@@ -29,7 +29,7 @@ Download the latest installer from [GitHub Releases](https://github.com/nanzheyi
 After installation, two entry points are available:
 
 - `Codex++`: silently starts the official desktop app with saved provider settings and enhancements.
-- `Codex++ Manager`: manages providers, models, tools, sessions, enhancements, scripts, updates, and diagnostics.
+- `Codex++ Manager`: manages providers, models, tools, sessions, enhancements, updates, and diagnostics.
 
 For first-time setup, open the manager, verify the detected app path, configure a provider and optional enhancements, then launch through `Codex++`. The Windows installer creates Desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/Codex++.app` and `/Applications/Codex++ 管理工具.app`.
 
@@ -171,7 +171,7 @@ If Codex++ helps you, you can support its continued maintenance.
 | Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
 | Development workflow | Project move, Upstream worktree creation, and thread IDs |
-| Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
+| Maintenance | App detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
@@ -199,7 +199,7 @@ Provider switching saves the current profile before applying the target profile.
 - Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
 - Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
 - Stepwise suggestions with a separate API, model, item count, and timeout.
-- Upstream worktrees, custom image overlays, and user scripts.
+- Upstream worktrees and custom image overlays.
 
 Settings that depend on renderer injection generally require saving and restarting Codex++.
 

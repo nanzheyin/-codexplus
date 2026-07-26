@@ -34,14 +34,12 @@ pub mod relay_latency;
 pub mod relay_rotation;
 pub mod relay_switch;
 pub mod routes;
-pub mod script_market;
 pub mod service_tier_preload;
 pub mod settings;
 pub mod status;
 pub mod stepwise;
 pub mod update;
 pub mod upstream_worktree;
-pub mod user_scripts;
 pub mod version;
 pub mod watcher;
 #[cfg(windows)]
