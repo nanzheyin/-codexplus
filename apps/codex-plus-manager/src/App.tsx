@@ -3746,45 +3746,48 @@ function EnhanceScreen({
     { id: "interface", label: t("界面与启动"), detail: t("语言、菜单和启动速度"), icon: AppWindow },
     { id: "advanced", label: t("高级兼容"), detail: t("模型列表和系统插件守护"), icon: Boxes },
   ];
-  const activeSectionOption = enhanceSections.find((section) => section.id === activeSection) ?? enhanceSections[0];
-  const ActiveSectionIcon = activeSectionOption.icon;
   return (
     <div className="deck-page deck-settings-page enhance-deck-page">
       <Panel className="enhance-master-panel">
-        <CardHead title={t("Codex 增强")} detail={t("会话删除、导出、项目移动和页面增强能力")} />
-        <CardContent>
-          <div className="enhance-master-grid">
-          <label className="switch-row enhance-master-switch">
-            <input
-              checked={form.enhancementsEnabled}
-              onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用 Codex 增强")}</strong>
-              <small>{t("关闭后会停用会话、导出和项目相关增强；原生菜单桥接保持可用。")}</small>
-            </span>
-          </label>
-          <ModeSelector launchMode={form.launchMode} actions={actions} />
+        <CardContent className="enhance-control-content">
+          <div className="enhance-control-bar">
+            <label className="switch-row enhance-master-switch">
+              <input
+                checked={form.enhancementsEnabled}
+                onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>{masterEnabled ? t("Codex 增强已启用") : t("Codex 增强已关闭")}</strong>
+                <small>{t("关闭后会停用会话、导出和项目相关增强；原生菜单桥接保持可用。")}</small>
+              </span>
+            </label>
+            <ModeSelector launchMode={form.launchMode} actions={actions} />
           </div>
         </CardContent>
       </Panel>
-      <div className="deck-settings-layout">
-        <DeckSectionNav
-          active={activeSection}
-          label={t("增强功能分类")}
-          onChange={setActiveSection}
-          options={enhanceSections}
-        />
-        <section className="deck-settings-content">
-          <div className="deck-settings-content-head">
-            <span className="deck-settings-content-icon"><ActiveSectionIcon className="h-4 w-4" /></span>
-            <div>
-              <h2>{activeSectionOption.label}</h2>
-              <p>{activeSectionOption.detail}</p>
-            </div>
-          </div>
-          <div className="enhance-feature-groups" data-active-section={activeSection}>
+      <section className="deck-settings-content enhance-settings-content">
+        <nav aria-label={t("增强功能分类")} className="enhance-section-tabs" role="tablist">
+          {enhanceSections.map((section) => {
+            const Icon = section.icon;
+            const selected = activeSection === section.id;
+            return (
+              <button
+                aria-selected={selected}
+                className={selected ? "active" : ""}
+                key={section.id}
+                onClick={() => setActiveSection(section.id)}
+                role="tab"
+                type="button"
+              >
+                <Icon className="h-4 w-4" />
+                <span>{section.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="enhance-feature-groups">
+          <div className="enhance-section-panel" hidden={activeSection !== "advanced"}>
             <FeatureGroup title={t("高级兼容")} detail={t("仅在模型列表或系统插件识别异常时启用。") }>
               <details className="enhance-advanced">
                 <summary>{t("兼容选项")}</summary>
@@ -3792,6 +3795,11 @@ function EnhanceScreen({
                 <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
               </details>
             </FeatureGroup>
+            <FeatureGroup title={t("远程 Git")} detail={t("通过 upstream worktree 管理远程 Git 工作区。")}>
+              <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+            </FeatureGroup>
+          </div>
+          <div className="enhance-section-panel" hidden={activeSection !== "conversation"}>
             <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
               <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示永久删除按钮；删除后不可撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
               <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
@@ -3808,16 +3816,15 @@ function EnhanceScreen({
               <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
               <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
             </FeatureGroup>
+          </div>
+          <div className="enhance-section-panel" hidden={activeSection !== "interface"}>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言和启动速度；原生菜单栏集成与汉化固定启用。")}>
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
               <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
             </FeatureGroup>
-            <FeatureGroup title={t("远程 Git")} detail={t("通过 upstream worktree 管理远程 Git 工作区。")}>
-              <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
-            </FeatureGroup>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
       <div className="deck-save-bar">
         <div>
           <span className={masterEnabled ? "ready" : ""} aria-hidden="true" />
@@ -7033,8 +7040,9 @@ function providerDoctorSteps(
 
 function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions: Actions }) {
   return (
-    <div className="mode-grid">
+    <div className="mode-grid enhance-mode-selector">
       <button
+        aria-pressed={launchMode === "relay"}
         className={`mode-option ${launchMode === "relay" ? "active" : ""}`}
         onClick={() => void actions.setLaunchMode("relay")}
         type="button"
@@ -7043,6 +7051,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         <span>{t("适合官方登录或混合 API Key；优先保留 Codex 原生行为，只加载必要的会话与输入增强。")}</span>
       </button>
       <button
+        aria-pressed={launchMode === "patch"}
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
         onClick={() => void actions.setLaunchMode("patch")}
         type="button"

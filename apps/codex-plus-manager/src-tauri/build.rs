@@ -2,6 +2,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-env-changed=SOURCE_VERSION");
     println!("cargo:rerun-if-changed=../../../.git/HEAD");
+    println!("cargo:rerun-if-changed=icons/icon.ico");
+    println!("cargo:rerun-if-changed=icons/icon.png");
     println!(
         "cargo:rustc-env=CODEX_PLUS_BUILD_SHA={}",
         build_commit_sha()
