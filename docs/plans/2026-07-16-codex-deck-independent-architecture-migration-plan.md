@@ -83,7 +83,7 @@ Codex Deck
 - Codex App 检测、启动、停止、更新、watcher、环境检查和平台安装能力；
 - 供应商切换、模型目录、上下文窗口、协议适配、代理、聚合和轮换；
 - 会话查询、搜索、导出、删除、项目归属、provider 修复和索引维护；
-- MCP、skills、plugins 和插件市场相关能力；
+- MCP、skills 和 plugins 管理能力；
 - 当前可以启用的 renderer 增强及其设置、关闭和异常降级行为；
 - 当前用户数据、供应商资料、通用配置、增强设置和必要状态的一次性导入。
 
@@ -488,7 +488,6 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 | `bridge.rs` / `cdp.rs` / `routes.rs` | one-shot CDP + RPC Gateway | 不迁移长期 bridge 结构 |
 | `renderer-inject.js` | Renderer Feature Registry | 按 feature 拆分并要求 dispose |
 | `codex_sqlite.rs` / local storage | Session / Codex Storage Adapter | schema 转换隔离在 adapter |
-| `plugin_marketplace.rs` | Context Packages | 先定义来源、安装、升级和回滚模型 |
 | `diagnostic_log.rs` / status | Observability | 异步有界日志、轮转和聚合指标 |
 | install / update / platform code | Platform Adapters | 按 Windows、macOS 分开实现和验收 |
 | Manager `App.tsx` / Tauri commands | Feature UI + RPC Client | UI 不再直接调用底层文件和数据库实现 |
@@ -561,7 +560,7 @@ Codex Deck 产品分支不直接 rebase 上游。当前 `AGENTS.md` 中的上游
 ### 阶段 6：Context、Proxy 与扩展能力
 
 - 协议代理、聚合和轮换。
-- MCP、skills、plugins 和插件市场。
+- MCP、skills 和 plugins 管理。
 - Zed、移动中继等能力必须在冻结清单时明确“迁移”或“不迁移”，不能以未定义的后续版本规避一次性交付范围。
 
 退出条件：每个被吸收能力都通过 Deck 功能 intake、许可和真实链路验收；未被选择的上游功能不构成阻塞。

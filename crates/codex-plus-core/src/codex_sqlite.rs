@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ const MEBIBYTE: u64 = 1024 * 1024;
 const LOGS_DB_TARGET_PERCENT: u64 = 75;
 const LOGS_DB_DELETE_BATCH_ROWS: i64 = 5_000;
 const LOGS_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(150);
+const LOGS_DB_MAINTENANCE_STATE_FILE: &str = "logs-db-maintenance.json";
 
 pub fn default_codex_home_dir() -> PathBuf {
     crate::codex_home::default_codex_home_dir()
@@ -69,6 +70,11 @@ pub fn codex_sqlite_sidecar_paths(db_path: &Path) -> [PathBuf; 3] {
         PathBuf::from(format!("{}-wal", db_path.to_string_lossy())),
         PathBuf::from(format!("{}-shm", db_path.to_string_lossy())),
     ]
+}
+
+/// 返回 logs_2.sqlite 及其 SQLite 侧文件的实际磁盘占用。
+pub fn codex_logs_db_size_bytes(home: &Path) -> u64 {
+    sqlite_disk_bytes(&codex_logs_db_path_from_home(home))
 }
 
 pub fn relative_to_codex_home(home: &Path, path: &Path) -> PathBuf {
@@ -170,6 +176,69 @@ pub struct LogsDbMaintenanceResult {
     pub deleted_rows: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogsDbMaintenanceRecord {
+    pub started_at_ms: u64,
+    pub elapsed_ms: u64,
+    pub max_mb: u32,
+    pub result: Option<LogsDbMaintenanceResult>,
+    pub error: Option<String>,
+}
+
+pub fn maintain_logs_db_size_recorded(home: &Path, max_mb: u32) -> LogsDbMaintenanceRecord {
+    let started_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let started = Instant::now();
+    let maintenance = maintain_logs_db_size(home, max_mb);
+    let record = match maintenance {
+        Ok(result) => LogsDbMaintenanceRecord {
+            started_at_ms,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            max_mb,
+            result: Some(result),
+            error: None,
+        },
+        Err(error) => LogsDbMaintenanceRecord {
+            started_at_ms,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            max_mb,
+            result: None,
+            error: Some(error.to_string()),
+        },
+    };
+    let _ = save_logs_db_maintenance_record(home, &record);
+    record
+}
+
+pub fn load_logs_db_maintenance_record(
+    home: &Path,
+) -> anyhow::Result<Option<LogsDbMaintenanceRecord>> {
+    let path = logs_db_maintenance_record_path(home);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)?;
+    Ok(Some(serde_json::from_str(&text)?))
+}
+
+fn save_logs_db_maintenance_record(
+    home: &Path,
+    record: &LogsDbMaintenanceRecord,
+) -> anyhow::Result<()> {
+    let path = logs_db_maintenance_record_path(home);
+    let text = serde_json::to_string_pretty(record)?;
+    crate::settings::atomic_write(&path, text.as_bytes())?;
+    Ok(())
+}
+
+fn logs_db_maintenance_record_path(home: &Path) -> PathBuf {
+    home.join(".tmp/codex-plus")
+        .join(LOGS_DB_MAINTENANCE_STATE_FILE)
+}
+
 /// 在 Codex 启动前限制 logs_2.sqlite 的磁盘占用。
 ///
 /// 只删除 logs 表中最旧的遥测记录，不访问会话、消息或 rollout。写锁忙时立即跳过，
@@ -178,7 +247,7 @@ pub fn maintain_logs_db_size(home: &Path, max_mb: u32) -> anyhow::Result<LogsDbM
     let db_path = codex_logs_db_path_from_home(home);
     let max_bytes = u64::from(max_mb).saturating_mul(MEBIBYTE);
     let target_bytes = max_bytes.saturating_mul(LOGS_DB_TARGET_PERCENT) / 100;
-    let db_bytes_before = sqlite_disk_bytes(&db_path);
+    let db_bytes_before = codex_logs_db_size_bytes(home);
     let skipped = |status: &str, db_bytes_after: u64| LogsDbMaintenanceResult {
         status: status.to_string(),
         db_bytes_before,
@@ -227,7 +296,7 @@ pub fn maintain_logs_db_size(home: &Path, max_mb: u32) -> anyhow::Result<LogsDbM
                 return Ok(LogsDbMaintenanceResult {
                     status: "partial_busy".to_string(),
                     db_bytes_before,
-                    db_bytes_after: sqlite_disk_bytes(&db_path),
+                    db_bytes_after: codex_logs_db_size_bytes(home),
                     max_bytes,
                     target_bytes,
                     estimated_live_bytes,
@@ -255,7 +324,7 @@ pub fn maintain_logs_db_size(home: &Path, max_mb: u32) -> anyhow::Result<LogsDbM
     estimated_live_bytes = sqlite_estimated_live_bytes(&conn)?;
     drop(conn);
 
-    let db_bytes_after = sqlite_disk_bytes(&db_path);
+    let db_bytes_after = codex_logs_db_size_bytes(home);
     Ok(LogsDbMaintenanceResult {
         status: if db_bytes_after <= max_bytes {
             "compacted".to_string()
@@ -580,7 +649,20 @@ fn is_model_id_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_model_suffixes_in_text;
+    use super::{
+        codex_logs_db_path_from_home, codex_logs_db_size_bytes, sanitize_model_suffixes_in_text,
+    };
+
+    #[test]
+    fn logs_db_size_includes_sqlite_sidecars() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = codex_logs_db_path_from_home(temp.path());
+        std::fs::write(&db_path, [0_u8; 3]).unwrap();
+        std::fs::write(format!("{}-wal", db_path.to_string_lossy()), [0_u8; 5]).unwrap();
+        std::fs::write(format!("{}-shm", db_path.to_string_lossy()), [0_u8; 7]).unwrap();
+
+        assert_eq!(codex_logs_db_size_bytes(temp.path()), 15);
+    }
 
     #[test]
     fn strips_trailing_suffix_from_model_names() {

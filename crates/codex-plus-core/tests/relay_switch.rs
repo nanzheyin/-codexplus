@@ -109,7 +109,7 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.context_window, "1000000");
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
-    assert_eq!(stored.launch_mode, LaunchMode::Patch);
+    assert_eq!(stored.launch_mode, LaunchMode::Relay);
 }
 
 #[test]
@@ -278,7 +278,7 @@ goals = true
 }
 
 #[test]
-fn switch_preserves_codex_app_state_and_remote_plugin_marketplace() {
+fn switch_preserves_codex_app_state_and_computer_use_guard() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("codex");
     std::fs::create_dir(&home).unwrap();
@@ -355,7 +355,6 @@ base_url = "https://a.example/v1"
             pure_profile("a", "https://a.example/v1", "sk-a"),
             pure_profile("b", "https://b.example/v1", "sk-b"),
         ],
-        codex_app_plugin_marketplace_unlock: true,
         computer_use_guard_enabled: true,
         ..BackendSettings::default()
     };
@@ -363,7 +362,6 @@ base_url = "https://a.example/v1"
     let next = BackendSettings {
         active_relay_id: "b".to_string(),
         relay_profiles: original.relay_profiles.clone(),
-        codex_app_plugin_marketplace_unlock: true,
         computer_use_guard_enabled: true,
         ..BackendSettings::default()
     };
@@ -409,7 +407,6 @@ base_url = "https://a.example/v1"
         home.join("backups_state/app-state-sync/latest-safe-state.json")
             .is_file()
     );
-    assert!(config.contains("[marketplaces.openai-curated-remote]"));
     #[cfg(windows)]
     {
         assert!(config.contains("[marketplaces.openai-bundled]"));

@@ -353,13 +353,6 @@ impl LaunchHooks for LauncherHooks {
             .await
     }
 
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        settings: &codex_plus_core::settings::BackendSettings,
-    ) -> anyhow::Result<()> {
-        self.core.ensure_plugin_marketplace_config(settings).await
-    }
-
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
     }
@@ -461,25 +454,16 @@ impl Default for LauncherDataService {
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         let db_paths = self.candidate_db_paths();
-        let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
         tokio::task::spawn_blocking(move || {
-            codex_plus_data::delete_local_from_paths_with_cleanup(
+            codex_plus_data::delete_local_permanently_from_paths_with_cleanup(
                 db_paths,
-                backup_store,
                 &session,
                 &codex_home,
             )
         })
         .await
         .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))
-    }
-
-    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
-        let adapter = self.storage_adapter();
-        tokio::task::spawn_blocking(move || adapter.undo(&undo_token))
-            .await
-            .map_err(|error| anyhow::anyhow!("undo task failed: {error}"))
     }
 
     async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value> {
@@ -867,8 +851,6 @@ mod tests {
         assert!(
             source.contains(".ensure_builtin_plugin_state_after_provider_switch(settings, source)")
         );
-        assert!(source.contains("async fn ensure_plugin_marketplace_config"));
-        assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
         assert!(source.contains("async fn start_computer_use_guard_watchdog"));
         assert!(source.contains("self.core"));
         assert!(source.contains(".start_computer_use_guard_watchdog(settings)"));

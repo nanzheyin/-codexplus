@@ -36,6 +36,31 @@ pub fn delete_local_from_paths(
     result
 }
 
+/// Permanently deletes a session from every candidate database without creating an undo backup.
+pub fn delete_local_permanently_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    session: &SessionRef,
+) -> DeleteResult {
+    let mut result = failed(
+        &session.session_id,
+        "Thread not found in local storage".to_string(),
+    );
+    let mut deleted_count = 0usize;
+    for db_path in db_paths {
+        let candidate_result = delete_local_permanently_from_path(&db_path, session);
+        if matches!(candidate_result.status, DeleteStatus::LocalDeleted) {
+            deleted_count += 1;
+            result = candidate_result;
+        } else if deleted_count == 0 {
+            result = candidate_result;
+        }
+    }
+    if deleted_count > 1 {
+        result.message = format!("已从 {deleted_count} 个本地存储永久删除");
+    }
+    result
+}
+
 pub fn delete_local_from_paths_with_cleanup(
     db_paths: impl IntoIterator<Item = PathBuf>,
     backup_store: BackupStore,
@@ -72,6 +97,73 @@ pub fn delete_local_from_paths_with_cleanup(
         }
     }
     result
+}
+
+/// Permanently deletes a session and removes stale sidebar/index references.
+pub fn delete_local_permanently_from_paths_with_cleanup(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    session: &SessionRef,
+    codex_home: &Path,
+) -> DeleteResult {
+    let resolved_session = SessionRef {
+        session_id: resolve_codex_thread_id(codex_home, &session.session_id),
+        title: session.title.clone(),
+    };
+    let mut result = delete_local_permanently_from_paths(db_paths, &resolved_session);
+    if !matches!(result.status, DeleteStatus::LocalDeleted) && !is_thread_not_found_result(&result)
+    {
+        return result;
+    }
+    let thread_id = if result.session_id.trim().is_empty() {
+        normalize_codex_thread_id(&resolved_session.session_id)
+    } else {
+        normalize_codex_thread_id(&result.session_id)
+    };
+    match crate::provider_sync::prune_deleted_thread_references_permanently(
+        codex_home,
+        &[thread_id],
+    ) {
+        Ok(prune) => {
+            let pruned_any = prune.pruned_session_index_entries > 0 || prune.app_state_pruned;
+            if matches!(result.status, DeleteStatus::LocalDeleted) && pruned_any {
+                result.message = format!("{}，并清理列表入口", result.message);
+            } else if pruned_any {
+                result.status = DeleteStatus::LocalDeleted;
+                result.session_id = normalize_codex_thread_id(&resolved_session.session_id);
+                result.message = "本地记录已不存在，已清理残留列表入口".to_string();
+            }
+        }
+        Err(error) => {
+            result.message = format!("{}；列表入口清理失败：{error}", result.message);
+        }
+    }
+    result
+}
+
+fn delete_local_permanently_from_path(db_path: &Path, session: &SessionRef) -> DeleteResult {
+    if !db_path.exists() {
+        return failed(
+            &session.session_id,
+            format!("Database not found: {}", db_path.to_string_lossy()),
+        );
+    }
+    let result = (|| -> anyhow::Result<DeleteResult> {
+        let mut db = Connection::open(db_path)?;
+        match schema_kind(&db)? {
+            Some(SchemaKind::GenericSessions) => {
+                delete_generic_session_permanently(&mut db, session)
+            }
+            Some(SchemaKind::CodexThreads) => delete_codex_thread_permanently(&mut db, session),
+            Some(SchemaKind::CodexAutomationRuns) => {
+                delete_codex_automation_run_permanently(&mut db, session)
+            }
+            None => Ok(failed(
+                &session.session_id,
+                "Unsupported local storage schema".to_string(),
+            )),
+        }
+    })();
+    result.unwrap_or_else(|error| failed(&session.session_id, error.to_string()))
 }
 
 pub fn move_codex_thread_workspace_from_paths(
@@ -761,6 +853,106 @@ impl SQLiteStorageAdapter {
     }
 }
 
+fn delete_generic_session_permanently(
+    db: &mut Connection,
+    session: &SessionRef,
+) -> anyhow::Result<DeleteResult> {
+    let exists = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+        [&session.session_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !exists {
+        return Ok(failed(
+            &session.session_id,
+            "Session not found in local storage".to_string(),
+        ));
+    }
+    let tx = db.transaction()?;
+    if has_table(&tx, "messages")? {
+        tx.execute(
+            "DELETE FROM messages WHERE session_id = ?1",
+            [&session.session_id],
+        )?;
+    }
+    tx.execute("DELETE FROM sessions WHERE id = ?1", [&session.session_id])?;
+    tx.commit()?;
+    Ok(permanently_deleted(&session.session_id))
+}
+
+fn delete_codex_thread_permanently(
+    db: &mut Connection,
+    session: &SessionRef,
+) -> anyhow::Result<DeleteResult> {
+    let thread_id = normalize_codex_thread_id(&session.session_id);
+    let rollout_path = db
+        .query_row(
+            "SELECT rollout_path FROM threads WHERE id = ?1",
+            [&thread_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    let Some(rollout_path) = rollout_path else {
+        return Ok(failed(
+            &session.session_id,
+            "Thread not found in local storage".to_string(),
+        ));
+    };
+
+    let tx = db.transaction()?;
+    delete_related_rows(&tx, "thread_dynamic_tools", "thread_id = ?1", &[&thread_id])?;
+    delete_related_rows(&tx, "thread_goals", "thread_id = ?1", &[&thread_id])?;
+    delete_related_rows(
+        &tx,
+        "thread_spawn_edges",
+        "parent_thread_id = ?1 OR child_thread_id = ?1",
+        &[&thread_id],
+    )?;
+    delete_related_rows(&tx, "stage1_outputs", "thread_id = ?1", &[&thread_id])?;
+    if has_table(&tx, "agent_job_items")?
+        && has_columns(&tx, "agent_job_items", &["assigned_thread_id"])?
+    {
+        tx.execute(
+            "UPDATE agent_job_items SET assigned_thread_id = NULL WHERE assigned_thread_id = ?1",
+            [&thread_id],
+        )?;
+    }
+    tx.execute("DELETE FROM threads WHERE id = ?1", [&thread_id])?;
+    tx.commit()?;
+
+    if let Some(path) = rollout_path.filter(|path| !path.trim().is_empty()) {
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Ok(failed(
+                    &thread_id,
+                    format!("本地数据库已永久删除，但 rollout 文件删除失败：{path}: {error}"),
+                ));
+            }
+        }
+    }
+    Ok(permanently_deleted(&thread_id))
+}
+
+fn delete_codex_automation_run_permanently(
+    db: &mut Connection,
+    session: &SessionRef,
+) -> anyhow::Result<DeleteResult> {
+    let thread_id = normalize_codex_thread_id(&session.session_id);
+    let exists = related_rows_exist(db, "automation_runs", "thread_id = ?1", &[&thread_id])?
+        || related_rows_exist(db, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+    if !exists {
+        return Ok(failed(
+            &session.session_id,
+            "Thread not found in local storage".to_string(),
+        ));
+    }
+    let tx = db.transaction()?;
+    delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
+    delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+    tx.commit()?;
+    Ok(permanently_deleted(&thread_id))
+}
+
 fn optional_column_expression<'a>(
     columns: &HashSet<String>,
     column: &'a str,
@@ -952,6 +1144,16 @@ pub fn resolve_codex_thread_id(codex_home: &Path, session_id: &str) -> String {
         matching_thread_ids.into_iter().next().unwrap_or(normalized)
     } else {
         normalized
+    }
+}
+
+fn permanently_deleted(session_id: &str) -> DeleteResult {
+    DeleteResult {
+        status: DeleteStatus::LocalDeleted,
+        session_id: session_id.to_string(),
+        message: "已从本地存储永久删除".to_string(),
+        undo_token: None,
+        backup_path: None,
     }
 }
 
@@ -1232,6 +1434,23 @@ fn delete_related_rows(
         )?;
     }
     Ok(())
+}
+
+fn related_rows_exist(
+    db: &Connection,
+    table: &str,
+    where_clause: &str,
+    params: &[&dyn ToSql],
+) -> anyhow::Result<bool> {
+    if !has_table(db, table)? {
+        return Ok(false);
+    }
+    let count = db.query_row(
+        &format!("SELECT COUNT(*) FROM \"{table}\" WHERE {where_clause}"),
+        params,
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn rollout_file_backups(thread_rows: Option<&Vec<Value>>) -> Vec<Value> {

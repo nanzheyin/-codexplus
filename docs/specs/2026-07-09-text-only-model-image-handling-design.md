@@ -219,7 +219,7 @@ pub struct VisionRelayConfig {
 
 #### B.3 Codex 插件/skill
 
-在 agent 层面，遇到图片任务时用工具调 VL 模型、结果以文本回灌（Issue 评论提及的 claude-vision-skill 思路）。Codex++ 有 `plugin_marketplace.rs` 插件基础设施可挂载。
+在 agent 层面，遇到图片任务时用独立 Skill 调 VL 模型、结果以文本回灌（Issue 评论提及的 claude-vision-skill 思路）。
 
 局限：依赖 agent 主动调用，行为不如 B1/B2 确定，适合「按需识图」而非「自动兜底所有图片」。
 

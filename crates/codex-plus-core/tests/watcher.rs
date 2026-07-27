@@ -53,11 +53,11 @@ fn watcher_install_plan_registers_rust_launcher_at_logon() {
     assert_eq!(plan.run_value_name, "CodexDeckWatcher");
     assert_eq!(
         plan.run_value,
-        "\"C:/Tools/codex-deck.exe\" --debug-port 9333"
+        "\"C:/Tools/codex-deck.exe\" --launch-codex --debug-port 9333"
     );
     assert_eq!(plan.shortcut_name, "CodexDeckWatcher.lnk");
     assert_eq!(plan.shortcut_target, "C:/Tools/codex-deck.exe");
-    assert_eq!(plan.shortcut_arguments, "--debug-port 9333");
+    assert_eq!(plan.shortcut_arguments, "--launch-codex --debug-port 9333");
 }
 
 #[test]
@@ -65,6 +65,7 @@ fn spawn_launcher_command_points_to_silent_binary_only() {
     let command = build_spawn_launcher_command("C:/Tools/codex-deck.exe", 9444);
 
     assert_eq!(command[0], "C:/Tools/codex-deck.exe");
+    assert!(command.contains(&"--launch-codex".to_string()));
     assert!(command.contains(&"--debug-port".to_string()));
     assert!(command.contains(&"9444".to_string()));
     assert!(!command.iter().any(|part| part.contains("manager")));

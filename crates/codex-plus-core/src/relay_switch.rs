@@ -51,31 +51,6 @@ pub fn switch_relay_profile_in_home(
 }
 
 fn finish_provider_switch_state_sync(home: &Path, settings: &BackendSettings, source: &str) {
-    if settings.codex_app_plugin_marketplace_unlock {
-        match crate::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(home) {
-            Ok(result) => {
-                if result.initialized || result.configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "relay_switch.remote_plugin_marketplace_ready",
-                        serde_json::json!({
-                            "source": source,
-                            "initialized": result.initialized,
-                            "configured": result.configured,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "relay_switch.remote_plugin_marketplace_failed",
-                    serde_json::json!({
-                        "source": source,
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
-    }
     if settings.builtin_plugin_guard_enabled() {
         crate::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
             home, source,

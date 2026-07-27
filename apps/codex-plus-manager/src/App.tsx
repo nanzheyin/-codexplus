@@ -16,7 +16,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownWideNarrow,
@@ -93,7 +92,6 @@ import {
 } from "./model-windows";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
-const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const codexDeckLogo = new URL("./assets/codex-deck-logo.svg", import.meta.url).href;
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
@@ -123,34 +121,57 @@ type OverviewResult = CommandResult<{
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
+  logs_db_bytes: number;
   current_version: string;
   update_status: string;
   settings_path: string;
   logs_path: string;
+  build_commit_sha: string;
+  manager_exe_path: string;
 }>;
 
-type PluginMarketplaceRepairResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  initialized: boolean;
-  configured: boolean;
-  needsRepair: boolean;
+type StorageUsage = {
+  path: string;
+  bytes: number;
+  files: number;
+};
+
+type LogsDbMaintenanceResult = {
+  status: string;
+  db_bytes_before: number;
+  db_bytes_after: number;
+  max_bytes: number;
+  target_bytes: number;
+  estimated_live_bytes: number;
+  deleted_rows: number;
+};
+
+type LogsDbMaintenanceRecord = {
+  startedAtMs: number;
+  elapsedMs: number;
+  maxMb: number;
+  result: LogsDbMaintenanceResult | null;
+  error: string | null;
+};
+
+type StorageHealthResult = CommandResult<{
+  codexLogsDb: StorageUsage;
+  diagnosticLogs: StorageUsage;
+  sessionDeleteBackups: StorageUsage;
+  providerSyncBackups: StorageUsage;
+  logsDbMaxMb: number;
+  lastLogsMaintenance: LogsDbMaintenanceRecord | null;
 }>;
 
-type PluginMarketplaceStatusResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
+type SessionDeleteBackupCleanupResult = CommandResult<{
+  removedFiles: number;
+  freedBytes: number;
+  remaining: StorageUsage;
 }>;
 
-type RemotePluginMarketplaceResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
-  pluginCount: number;
-  skillCount: number;
+type LogsDbMaintenanceCommandResult = CommandResult<{
+  maintenance: LogsDbMaintenanceRecord;
+  health: Omit<StorageHealthResult, "status" | "message">;
 }>;
 
 type BackendSettings = {
@@ -163,8 +184,6 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
-  codexAppPluginMarketplaceUnlock: boolean;
-  codexAppPluginAutoExpand: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
@@ -368,8 +387,6 @@ type DeleteLocalSessionResult = CommandResult<{
   status: string;
   session_id: string;
   message: string;
-  undo_token: string | null;
-  backup_path: string | null;
 }>;
 
 type ContextEntriesResult = CommandResult<{
@@ -752,24 +769,27 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "sessions" | "more";
+type MoreSection = "context" | "enhance" | "maintenance" | "settings" | "about";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
-  { id: "relay", label: t("供应商配置"), icon: KeyRound },
-  { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "context", label: t("工具与插件"), icon: Network },
-  { id: "enhance", label: t("Codex 增强"), icon: Hammer },
-  { id: "maintenance", label: t("安装维护"), icon: Wrench },
-  { id: "about", label: t("关于"), icon: Info },
-  { id: "settings", label: t("设置"), icon: Settings },
+  { id: "relay", label: t("供应商"), icon: KeyRound },
+  { id: "sessions", label: t("会话"), icon: MessageCircle },
+  { id: "more", label: t("更多"), icon: Settings },
 ];
 
 const routeGroups: Array<{ label: string; items: Route[] }> = [
-  { label: t("工作台"), items: ["overview", "relay", "sessions", "context"] },
-  { label: t("扩展"), items: ["enhance"] },
-  { label: t("系统"), items: ["maintenance", "about", "settings"] },
+  { label: t("工作台"), items: ["overview", "relay", "sessions", "more"] },
+];
+
+const moreSections: Array<DeckSectionOption<MoreSection>> = [
+  { id: "context", label: t("工具与插件"), detail: t("MCP、Skills 与 Plugins"), icon: Network },
+  { id: "enhance", label: t("Codex 增强"), detail: t("对话、界面与兼容选项"), icon: Hammer },
+  { id: "maintenance", label: t("维护"), detail: t("存储、入口与启动"), icon: Wrench },
+  { id: "settings", label: t("设置"), detail: t("主题与高级参数"), icon: Settings },
+  { id: "about", label: t("关于与诊断"), detail: t("版本、日志和诊断报告"), icon: Info },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -780,11 +800,9 @@ const defaultSettings: BackendSettings = {
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
-  enhancementsEnabled: true,
+  enhancementsEnabled: false,
   computerUseGuardEnabled: false,
-  codexAppPluginMarketplaceUnlock: true,
-  codexAppPluginAutoExpand: true,
-  codexAppModelWhitelistUnlock: true,
+  codexAppModelWhitelistUnlock: false,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
@@ -816,7 +834,7 @@ const defaultSettings: BackendSettings = {
   codexAppImageOverlayFitMode: "fit",
   codexGoalsEnabled: false,
   codexAppGoalResumeGuard: false,
-  launchMode: "patch",
+  launchMode: "relay",
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [
@@ -858,6 +876,7 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [moreSection, setMoreSection] = useState<MoreSection>(() => loadInitialMoreSection());
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -871,6 +890,7 @@ export function App() {
     resolve: (selectedIds: string[] | null) => void;
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
+  const [storageHealth, setStorageHealth] = useState<StorageHealthResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
@@ -902,21 +922,11 @@ export function App() {
     message: t("尚未运行历史会话修复。"),
     result: null,
   });
-  const [pluginMarketplaceProgress, setPluginMarketplaceProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未运行插件市场修复。"),
-  });
-  const [remotePluginMarketplace, setRemotePluginMarketplace] = useState<RemotePluginMarketplaceResult | null>(null);
-  const [remotePluginMarketplaceProgress, setRemotePluginMarketplaceProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未检查官方远端插件缓存。"),
-  });
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const [relayDetailDirty, setRelayDetailDirty] = useState(false);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -946,6 +956,17 @@ export function App() {
       setOverview(result);
       if (!silent) showResultNotice(t("概览已检查"), result, { silentSuccess: true });
     }
+  };
+
+  const refreshStorageHealth = async (silent = false) => {
+    const result = await run(() => call<StorageHealthResult>("load_storage_health"));
+    if (result) {
+      setStorageHealth(result);
+      if (!silent || !isSuccessStatus(result.status)) {
+        showResultNotice(t("存储健康"), result, { silentSuccess: true });
+      }
+    }
+    return result;
   };
 
   const refreshSettings = async (silent = false) => {
@@ -1204,16 +1225,24 @@ export function App() {
       request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
     });
 
-  const confirmSessionDelete = (title: string, message: string) =>
+  const confirmAction = (
+    title: string,
+    message: string,
+    confirmText = t("继续"),
+    cancelText = t("取消"),
+  ) =>
     new Promise<boolean>((resolve) => {
       setConfirmDialog({
         title,
         message,
-        confirmText: t("确认删除"),
-        cancelText: t("取消"),
+        confirmText,
+        cancelText,
         resolve,
       });
     });
+
+  const confirmSessionDelete = (title: string, message: string) =>
+    confirmAction(title, message, t("确认删除"));
 
   const selectSessionIndexCleanupCandidates = (candidates: SessionIndexCleanupCandidate[]) =>
     new Promise<string[] | null>((resolve) => {
@@ -1225,7 +1254,7 @@ export function App() {
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [truncateSessionDeletePreview(title)]));
+    const confirmed = await confirmSessionDelete(t("永久删除会话"), tf("永久删除会话“{0}”？本机与云端索引、数据库记录、rollout 文件及列表引用都会被真实删除，且无法撤销。", [truncateSessionDeletePreview(title)]));
     if (!confirmed) return;
     const result = await run(() => requestDeleteLocalSession(session));
     if (result) {
@@ -1246,8 +1275,8 @@ export function App() {
       .join("\n");
     const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
     const confirmed = await confirmSessionDelete(
-      t("批量删除会话"),
-      tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
+      t("批量永久删除会话"),
+      tf("永久删除选中的 {0} 个会话？相关索引、数据库记录、rollout 文件及列表引用都会被真实删除，且无法撤销。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
     );
     if (!confirmed) return;
 
@@ -1272,6 +1301,32 @@ export function App() {
       showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
     }
     await refreshLocalSessions(true);
+  };
+
+  const maintainLogsDbNow = async () => {
+    const result = await run(() => call<LogsDbMaintenanceCommandResult>("maintain_logs_db_now"));
+    if (result) {
+      setStorageHealth({ status: result.status, message: result.message, ...result.health });
+      setOverview((current) => current ? { ...current, logs_db_bytes: result.health.codexLogsDb.bytes } : current);
+      showResultNotice(t("日志数据库维护"), result);
+    }
+    return result;
+  };
+
+  const clearSessionDeleteBackups = async () => {
+    const backup = storageHealth?.sessionDeleteBackups;
+    const confirmed = await confirmAction(
+      t("清理旧会话删除备份"),
+      tf("永久删除 {0} 个旧版会话备份并释放 {1}？这些文件来自旧版本的可撤销删除，清理后无法恢复。", [backup?.files ?? 0, formatBytes(backup?.bytes ?? 0)]),
+      t("永久清理"),
+    );
+    if (!confirmed) return null;
+    const result = await run(() => call<SessionDeleteBackupCleanupResult>("clear_session_delete_backups"));
+    if (result) {
+      await refreshStorageHealth(true);
+      showResultNotice(t("旧会话删除备份"), result);
+    }
+    return result;
   };
 
   const refreshLiveContextEntries = async (silent = false) => {
@@ -1316,37 +1371,78 @@ export function App() {
     }
   };
 
-  const navigate = async (next: Route) => {
-    setRoute(next);
-    if (next === "overview") await refreshOverview(true);
+  const settingsDirty = settings !== null && (
+    JSON.stringify(normalizeSettings(settingsForm)) !== JSON.stringify(normalizeSettings(settings.settings))
+  );
+  const hasUnsavedChanges = settingsDirty || relayDetailDirty;
+
+  const confirmDiscardUnsavedChanges = async () => {
+    if (!hasUnsavedChanges) return true;
+    const confirmed = await confirmAction(
+      t("放弃未保存更改"),
+      t("当前页面还有未保存更改。离开后这些更改会丢失。"),
+      t("放弃更改"),
+    );
+    if (confirmed) {
+      if (settings) setSettingsForm(normalizeSettings(settings.settings));
+      setRelayDetailDirty(false);
+    }
+    return confirmed;
+  };
+
+  const loadRouteData = async (next: Route, nextMoreSection = moreSection) => {
+    if (next === "overview") {
+      await Promise.all([refreshOverview(true), refreshStorageHealth(true)]);
+    }
     if (next === "relay") {
-      await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshEnvConflicts(true);
-      await refreshCcsProviders(true);
-      await refreshLocalRelay(true);
+      await Promise.all([
+        refreshSettings(true),
+        refreshRelay(true),
+        refreshRelayFiles(true),
+        refreshEnvConflicts(true),
+        refreshLocalRelay(true),
+        refreshPendingProviderImport(true),
+      ]);
     }
     if (next === "sessions") {
-      await refreshSettings(true);
-      await refreshLocalSessions(true);
-      await refreshProviderSyncTargets(true);
+      await Promise.all([
+        refreshSettings(true),
+        refreshLocalSessions(true),
+        refreshProviderSyncTargets(true),
+      ]);
     }
-    if (next === "context") {
-      await refreshSettings(true);
-      await refreshRelayFiles(true);
-      await refreshLiveContextEntries(true);
+    if (next === "more" && nextMoreSection === "context") {
+      await Promise.all([
+        refreshSettings(true),
+        refreshRelayFiles(true),
+        refreshLiveContextEntries(true),
+      ]);
     }
-    if (next === "settings") await refreshSettings(true);
-    if (next === "about") {
-      await refreshOverview(true);
-      await refreshLogs(true);
-      await refreshDiagnostics(true);
+    if (next === "more" && nextMoreSection === "enhance") await refreshSettings(true);
+    if (next === "more" && nextMoreSection === "settings") await refreshSettings(true);
+    if (next === "more" && nextMoreSection === "about") {
+      await Promise.all([refreshOverview(true), refreshLogs(true), refreshDiagnostics(true)]);
     }
-    if (next === "maintenance") {
-      await refreshOverview(true);
-      await refreshWatcher(true);
+    if (next === "more" && nextMoreSection === "maintenance") {
+      await Promise.all([
+        refreshOverview(true),
+        refreshWatcher(true),
+        refreshStorageHealth(true),
+      ]);
     }
+  };
+
+  const navigate = async (next: Route, nextMoreSection = moreSection) => {
+    if (next === route && (next !== "more" || nextMoreSection === moreSection)) return;
+    if (!(await confirmDiscardUnsavedChanges())) return;
+    setRoute(next);
+    if (next === "more") setMoreSection(nextMoreSection);
+    await loadRouteData(next, nextMoreSection);
+  };
+
+  const refreshCurrent = async () => {
+    if (!(await confirmDiscardUnsavedChanges())) return;
+    await loadRouteData(route, moreSection);
   };
 
   const launch = async () => {
@@ -1360,7 +1456,7 @@ export function App() {
   const restart = async () => {
     const result = await launchCommand("restart_codex_plus");
     if (result) {
-      showNotice(t("重启 Codex Deck"), result.message, result.status);
+      showNotice(t("重启 Codex"), result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -1376,103 +1472,6 @@ export function App() {
       }),
     );
     return result;
-  };
-
-  const repairPluginMarketplace = async () => {
-    if (pluginMarketplaceProgress.active) return;
-    setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
-    const progressTimer = window.setInterval(() => {
-      setPluginMarketplaceProgress((current) => {
-        if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 9);
-        const message =
-          nextPercent < 28
-            ? t("正在连接 openai/plugins…")
-            : nextPercent < 62
-              ? t("正在下载插件市场快照…")
-              : nextPercent < 84
-                ? t("正在解压并校验插件文件…")
-                : t("正在写入 Codex 配置…");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 500);
-    try {
-      const result = await run(() => call<PluginMarketplaceRepairResult>("repair_plugin_marketplace"));
-      if (result) {
-        setPluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-        showNotice(t("插件市场修复"), result.message, result.status);
-      } else {
-        setPluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: t("插件市场修复失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
-  };
-
-  const refreshRemotePluginMarketplace = async (silent = false) => {
-    const result = await run(() => call<RemotePluginMarketplaceResult>("remote_plugin_marketplace_status"));
-    if (result) {
-      setRemotePluginMarketplace(result);
-      if (!silent) {
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-      }
-      if (!silent) showNotice(t("官方远端插件缓存"), result.message, result.status);
-    }
-    return result;
-  };
-
-  const repairRemotePluginMarketplace = async () => {
-    if (remotePluginMarketplaceProgress.active) return;
-    setRemotePluginMarketplaceProgress({
-      active: true,
-      percent: 18,
-      message: t("正在检查内置官方远端插件缓存…"),
-    });
-    const progressTimer = window.setInterval(() => {
-      setRemotePluginMarketplaceProgress((current) => {
-        if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 18);
-        const message =
-          nextPercent < 50
-            ? t("正在释放内置远端插件快照…")
-            : nextPercent < 78
-              ? t("正在注册官方远端插件市场…")
-              : t("正在刷新官方远端插件缓存状态…");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 450);
-    try {
-      const result = await run(() => call<RemotePluginMarketplaceResult>("repair_remote_plugin_marketplace"));
-      if (result) {
-        setRemotePluginMarketplace(result);
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-        showNotice(t("官方远端插件缓存"), result.message, result.status);
-      } else {
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: t("官方远端插件缓存修复失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
   };
 
   const installEntrypoints = async () => {
@@ -2068,20 +2067,14 @@ export function App() {
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
       if (startup?.showUpdate) {
-        setRoute("about");
+        setRoute("more");
+        setMoreSection("about");
         void checkUpdate(false);
       } else {
         void checkUpdate(true);
       }
-      await refreshOverview(true);
-      await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshLocalRelay(true);
-      await refreshEnvConflicts(true);
-      await refreshProviderSyncTargets(true);
-      await refreshPendingProviderImport(true);
-      await refreshRemotePluginMarketplace(true);
+      await Promise.all([refreshOverview(true), refreshSettings(true)]);
+      void refreshStorageHealth(true);
     })();
   }, []);
 
@@ -2100,11 +2093,28 @@ export function App() {
       setPendingProviderImport(null);
       return;
     }
-    const timer = window.setInterval(() => {
-      void refreshPendingProviderImport(true);
-    }, 1200);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshPendingProviderImport(true);
+    };
+    const timer = window.setInterval(refreshWhenVisible, 30_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [settingsForm.relayProfilesEnabled]);
+
+  useEffect(() => {
+    const preventCloseWithUnsavedChanges = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", preventCloseWithUnsavedChanges);
+    return () => window.removeEventListener("beforeunload", preventCloseWithUnsavedChanges);
+  }, [hasUnsavedChanges]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -2127,12 +2137,9 @@ export function App() {
 
   const actions = useMemo(
     () => ({
-      refreshCurrent: () => navigate(route),
+      refreshCurrent,
       launch,
       restart,
-      repairPluginMarketplace,
-      refreshRemotePluginMarketplace,
-      repairRemotePluginMarketplace,
       installEntrypoints,
       uninstallEntrypoints,
       repairShortcuts,
@@ -2264,15 +2271,23 @@ export function App() {
       switchPureApiMode,
       refreshLogs,
       refreshDiagnostics,
+      refreshStorageHealth,
+      maintainLogsDbNow,
+      clearSessionDeleteBackups,
+      confirmAction,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
-      goLogs: () => navigate("about"),
+      goLogs: () => navigate("more", "about"),
+      goRoute: (next: Route, section?: MoreSection) => navigate(next, section ?? moreSection),
       checkHealth: async () => {
-        await refreshOverview(true);
-        await refreshRelay(true);
-        await refreshWatcher(true);
-        showNotice(t("检查完成"), t("已刷新 Codex 应用、入口和 Watcher 状态。"), "ok");
+        await Promise.all([
+          refreshOverview(true),
+          refreshRelay(true),
+          refreshWatcher(true),
+          refreshStorageHealth(true),
+        ]);
+        showNotice(t("检查完成"), t("已刷新 Codex 应用、入口、Watcher 和存储状态。"), "ok");
       },
       installWatcher: () => watcherAction("install_watcher"),
       uninstallWatcher: () => watcherAction("uninstall_watcher"),
@@ -2280,7 +2295,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localRelay, localSessions, selectedProviderSyncTarget, envConflicts, ccsProviders],
+    [route, moreSection, launchForm, settingsForm, settings, storageHealth, relayDetailDirty, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localRelay, localSessions, selectedProviderSyncTarget, envConflicts, ccsProviders],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -2298,7 +2313,8 @@ export function App() {
                 <button
                   className="update-dot"
                   onClick={() => {
-                    setRoute("about");
+                    setRoute("more");
+                    setMoreSection("about");
                     void checkUpdate(false);
                   }}
                   title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
@@ -2348,10 +2364,10 @@ export function App() {
         </div>
       </aside>
       <main className="workspace">
-        <header className="topbar" key={`topbar-${route}`}>
+        <header className="topbar" key={`topbar-${route}-${moreSection}`}>
           <div>
-            <h1>{routeTitle(route)}</h1>
-            <p>{routeSubtitle(route)}</p>
+            <h1>{routeTitle(route, moreSection)}</h1>
+            <p>{routeSubtitle(route, moreSection)}</p>
           </div>
           <div className="topbar-actions">
             <Button
@@ -2372,9 +2388,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启 Codex Deck")} variant="outline">
+            <Button onClick={() => void actions.restart()} title={t("重启 Codex")} variant="outline">
               <Rocket className="h-4 w-4" />
-              {t("重启 Codex Deck")}
+              {t("重启 Codex")}
             </Button>
             <Button
               aria-label={t("刷新当前页面")}
@@ -2387,11 +2403,14 @@ export function App() {
             </Button>
           </div>
         </header>
-        <section className="screen" key={route}>
+        <section className="screen" key={`${route}-${moreSection}`}>
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
-              pluginMarketplaceProgress={pluginMarketplaceProgress}
+              storageHealth={storageHealth}
+              settings={settings}
+              form={settingsForm}
+              onFormChange={setSettingsForm}
               actions={actions}
             />
           ) : null}
@@ -2404,6 +2423,7 @@ export function App() {
               ccsProviders={ccsProviders}
               form={settingsForm}
               onFormChange={setSettingsForm}
+              onDirtyChange={setRelayDetailDirty}
               actions={actions}
             />
           ) : null}
@@ -2419,49 +2439,64 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "context" ? (
-            <ContextScreen
-              form={settingsForm}
-              liveEntries={liveContextEntries}
-              relayFiles={relayFiles}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
-          ) : null}
-          {route === "enhance" ? (
-            <EnhanceScreen
-              form={settingsForm}
-              pluginMarketplaceProgress={pluginMarketplaceProgress}
-              remotePluginMarketplace={remotePluginMarketplace}
-              remotePluginMarketplaceProgress={remotePluginMarketplaceProgress}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
-          ) : null}
-          {route === "maintenance" ? (
-            <MaintenanceScreen
-              overview={overview}
-              watcher={watcher}
-              settings={settings}
-              launchForm={launchForm}
-              onLaunchFormChange={setLaunchForm}
-              removeOwnedData={removeOwnedData}
-              onRemoveOwnedDataChange={setRemoveOwnedData}
-              actions={actions}
-            />
-          ) : null}
-          {route === "about" ? (
-            <AboutScreen
-              overview={overview}
-              update={update}
-              updateInstallProgress={updateInstallProgress}
-              logs={logs}
-              diagnostics={diagnostics}
-              actions={actions}
-            />
-          ) : null}
-          {route === "settings" ? (
-            <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+          {route === "more" ? (
+            <div className="more-workspace">
+              <nav aria-label={t("更多功能")} className="deck-tabs more-tabs">
+                {moreSections.map((section) => {
+                  const Icon = section.icon;
+                  return (
+                    <button
+                      aria-current={moreSection === section.id ? "page" : undefined}
+                      className={moreSection === section.id ? "active" : ""}
+                      key={section.id}
+                      onClick={() => void navigate("more", section.id)}
+                      type="button"
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span><strong>{section.label}</strong><small>{section.detail}</small></span>
+                    </button>
+                  );
+                })}
+              </nav>
+              {moreSection === "context" ? (
+                <ContextScreen
+                  form={settingsForm}
+                  liveEntries={liveContextEntries}
+                  relayFiles={relayFiles}
+                  onFormChange={setSettingsForm}
+                  actions={actions}
+                />
+              ) : null}
+              {moreSection === "enhance" ? (
+                <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+              ) : null}
+              {moreSection === "maintenance" ? (
+                <MaintenanceScreen
+                  overview={overview}
+                  storageHealth={storageHealth}
+                  watcher={watcher}
+                  settings={settings}
+                  launchForm={launchForm}
+                  onLaunchFormChange={setLaunchForm}
+                  removeOwnedData={removeOwnedData}
+                  onRemoveOwnedDataChange={setRemoveOwnedData}
+                  actions={actions}
+                />
+              ) : null}
+              {moreSection === "settings" ? (
+                <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+              ) : null}
+              {moreSection === "about" ? (
+                <AboutScreen
+                  overview={overview}
+                  update={update}
+                  updateInstallProgress={updateInstallProgress}
+                  logs={logs}
+                  diagnostics={diagnostics}
+                  actions={actions}
+                />
+              ) : null}
+            </div>
           ) : null}
         </section>
       </main>
@@ -2513,9 +2548,6 @@ type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   restart: () => Promise<void>;
-  repairPluginMarketplace: () => Promise<void>;
-  refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
-  repairRemotePluginMarketplace: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
@@ -2580,10 +2612,15 @@ type Actions = {
   switchPureApiMode: () => Promise<void>;
   refreshLogs: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
+  refreshStorageHealth: (silent?: boolean) => Promise<StorageHealthResult | null>;
+  maintainLogsDbNow: () => Promise<LogsDbMaintenanceCommandResult | null>;
+  clearSessionDeleteBackups: () => Promise<SessionDeleteBackupCleanupResult | null>;
+  confirmAction: (title: string, message: string, confirmText?: string, cancelText?: string) => Promise<boolean>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   copyLogs: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   goLogs: () => Promise<void>;
+  goRoute: (route: Route, section?: MoreSection) => Promise<void>;
   installWatcher: () => Promise<void>;
   uninstallWatcher: () => Promise<void>;
   enableWatcher: () => Promise<void>;
@@ -2594,11 +2631,17 @@ type Actions = {
 
 function OverviewScreen({
   overview,
-  pluginMarketplaceProgress,
+  storageHealth,
+  settings,
+  form,
+  onFormChange,
   actions,
 }: {
   overview: OverviewResult | null;
-  pluginMarketplaceProgress: TaskProgress;
+  storageHealth: StorageHealthResult | null;
+  settings: SettingsResult | null;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const health = healthItems(overview);
@@ -2606,6 +2649,38 @@ function OverviewScreen({
   const allHealthy = Boolean(overview?.codex_version) && health.every((item) => item.ok);
   const issueCount = health.filter((item) => !item.ok).length + (overview?.codex_version ? 0 : 1);
   const orderedHealth = [...health].sort((left, right) => Number(left.ok) - Number(right.ok));
+  const persistedLogsDbMaxMb = settings
+    ? normalizeLogsDbMaxMb(settings.settings.codexLogsDbMaxMb ?? 0)
+    : form.codexLogsDbMaxMb;
+  const logsDbLimitDirty = Boolean(settings) && form.codexLogsDbMaxMb !== persistedLogsDbMaxMb;
+  const currentLogsDbBytes = storageHealth?.codexLogsDb.bytes ?? overview?.logs_db_bytes ?? 0;
+  const currentLimitBytes = normalizeLogsDbMaxMb(form.codexLogsDbMaxMb) * 1024 * 1024;
+  const lastMaintenance = storageHealth?.lastLogsMaintenance ?? null;
+  const activeProvider = activeRelayProfile(normalizeSettings(form));
+  const providerReady = activeProvider.relayMode === "official"
+    ? Boolean(activeProvider.authContents.trim() || activeProvider.configContents.trim() || activeProvider.apiKey.trim())
+    : relayProfileSwitchValidation(activeProvider) === null;
+  const setupSteps = [
+    {
+      title: t("识别 Codex 应用"),
+      detail: overview?.codex_app.path || t("选择本机 Codex.exe、Codex.app 或应用目录"),
+      done: overview?.codex_app.status === "found",
+      action: () => actions.goRoute("more", "maintenance"),
+    },
+    {
+      title: t("配置供应商"),
+      detail: providerReady ? activeProvider.name : t("完成官方登录，或填写 API Base URL、Key 与模型"),
+      done: providerReady,
+      action: () => actions.goRoute("relay"),
+    },
+    {
+      title: t("安装并启动"),
+      detail: overview?.silent_shortcut.path || t("安装 Codex Deck 入口后启动 Codex"),
+      done: overview?.silent_shortcut.status === "installed",
+      action: () => actions.goRoute("more", "maintenance"),
+    },
+  ];
+  const setupIncomplete = setupSteps.some((step) => !step.done);
   return (
     <div className="deck-page overview-deck-page">
       <section className={`overview-status-band ${allHealthy ? "ready" : "attention"}`} aria-labelledby="system-status-heading">
@@ -2629,6 +2704,27 @@ function OverviewScreen({
           </Button>
         </div>
       </section>
+
+      {setupIncomplete ? (
+        <section className="overview-setup-guide" aria-labelledby="setup-guide-heading">
+          <div className="overview-section-head">
+            <div>
+              <h2 id="setup-guide-heading">{t("完成首次配置")}</h2>
+              <p>{t("按顺序完成三步，即可稳定启动和切换 Codex")}</p>
+            </div>
+            <Badge status="missing" />
+          </div>
+          <div className="setup-step-list">
+            {setupSteps.map((step, index) => (
+              <button className={step.done ? "done" : ""} key={step.title} onClick={() => void step.action()} type="button">
+                <span>{step.done ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>
+                <div><strong>{step.title}</strong><small>{step.detail}</small></div>
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="overview-summary" aria-label={t("运行状态概览")}>
         <div className="overview-section-head">
@@ -2666,6 +2762,50 @@ function OverviewScreen({
             value={overview?.latest_launch?.status ? statusLabel(overview.latest_launch.status) : t("暂无记录")}
           />
         </div>
+        <div className="feature-action-row overview-log-limit-row">
+          <div>
+            <strong>{t("Codex 日志数据库上限")}</strong>
+            <small>{t("0 表示关闭；超限时会在 Codex 退出后删除最旧日志并压缩数据库，不阻塞下次启动，也不影响会话、消息和 rollout。")}</small>
+            <small>{tf("已检索：{0}；当前上限：{1}", [formatBytes(currentLogsDbBytes), currentLimitBytes ? formatBytes(currentLimitBytes) : t("未启用")])}</small>
+            <small>{lastMaintenance ? logsMaintenanceSummary(lastMaintenance) : t("尚未执行日志数据库维护。")}</small>
+          </div>
+          <Badge status={settings ? (logsDbLimitDirty ? "missing" : "ok") : "not_checked"} />
+          <Input
+            aria-label={t("Codex 日志数据库上限")}
+            className="logs-db-limit-input"
+            disabled={!settings}
+            max={16384}
+            min={0}
+            step={64}
+            type="number"
+            value={form.codexLogsDbMaxMb}
+            onChange={(event) => onFormChange({
+              ...form,
+              codexLogsDbMaxMb: clampNumber(Number(event.currentTarget.value), 0, 16384),
+            })}
+            onBlur={(event) => onFormChange({
+              ...form,
+              codexLogsDbMaxMb: normalizeLogsDbMaxMb(Number(event.currentTarget.value)),
+            })}
+          />
+          <span className="feature-action-status">MB</span>
+          <Button
+            disabled={!logsDbLimitDirty}
+            onClick={() => void actions.saveSettingsValue(form, false)}
+            variant="secondary"
+          >
+            <Save className="h-4 w-4" />
+            {t("保存设置")}
+          </Button>
+          <Button
+            disabled={logsDbLimitDirty || persistedLogsDbMaxMb <= 0}
+            onClick={() => void actions.maintainLogsDbNow()}
+            variant="outline"
+          >
+            <Database className="h-4 w-4" />
+            {t("立即维护")}
+          </Button>
+        </div>
       </section>
 
       <div className="overview-main-grid">
@@ -2689,11 +2829,7 @@ function OverviewScreen({
                 <RefreshCw className="h-4 w-4" />
                 {t("重新检查")}
               </Button>
-              <Button disabled={pluginMarketplaceProgress.active} variant="outline" onClick={() => void actions.repairPluginMarketplace()}>
-                {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
-              </Button>
             </Toolbar>
-            <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
           </CardContent>
         </Panel>
         <Panel className="overview-launch-panel">
@@ -2764,6 +2900,7 @@ function RelayScreen({
   ccsProviders,
   form,
   onFormChange,
+  onDirtyChange,
   actions,
 }: {
   settings: SettingsResult | null;
@@ -2773,6 +2910,7 @@ function RelayScreen({
   ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
+  onDirtyChange: (dirty: boolean) => void;
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);
@@ -2785,6 +2923,7 @@ function RelayScreen({
   const [relaySearch, setRelaySearch] = useState("");
   const [relayListView, setRelayListView] = useState<RelayListView>("grid");
   const [relayListSort, setRelayListSort] = useState<RelayListSort>("manual");
+  const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const relayProfilesForDisplay = useMemo(() => {
     const query = relaySearch.trim().toLocaleLowerCase();
     const profiles = normalized.relayProfiles.filter((profile) => {
@@ -2811,6 +2950,10 @@ function RelayScreen({
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
   const isNewProfile = !!newProfileDraft;
+  const protectedProviderIds = new Set([
+    normalized.activeRelayId,
+    ...(localRelay?.running ? localRelay.settings.providerIds : []),
+  ]);
   const saveRelaySettings = async (next: BackendSettings) => {
     onFormChange(next);
     await actions.saveSettingsValue(next, true);
@@ -2827,6 +2970,13 @@ function RelayScreen({
     }
   }, [detailProfileId, newProfileDraft, normalized.relayProfiles]);
   useEffect(() => {
+    if (!detailProfile) onDirtyChange(false);
+    return () => onDirtyChange(false);
+  }, [detailProfile?.id, onDirtyChange]);
+  useEffect(() => {
+    if (!detailProfile) onDirtyChange(workspaceDirty);
+  }, [detailProfile?.id, onDirtyChange, workspaceDirty]);
+  useEffect(() => {
     if (!newProfileDraft && detailProfileId === normalized.activeRelayId) {
       void actions.refreshRelayFiles();
     }
@@ -2837,6 +2987,19 @@ function RelayScreen({
   };
 
   const localRelayEnabled = localRelay?.settings.enabled === true;
+  const changeWorkspaceSection = async (section: RelayWorkspaceSection) => {
+    if (section === activeSection) return;
+    if (workspaceDirty) {
+      const confirmed = await actions.confirmAction(
+        t("放弃本机文件更改"),
+        t("当前 config.toml 或 auth.json 还有未保存更改。切换页面后这些更改会丢失。"),
+        t("放弃更改"),
+      );
+      if (!confirmed) return;
+      setWorkspaceDirty(false);
+    }
+    setActiveSection(section);
+  };
   const workspaceTabs = (
     <nav aria-label={t("Codex 本地管理")} className="deck-tabs relay-workspace-tabs" role="tablist">
       {([
@@ -2848,7 +3011,7 @@ function RelayScreen({
           aria-selected={activeSection === id}
           className={activeSection === id ? "active" : ""}
           key={id}
-          onClick={() => setActiveSection(id)}
+          onClick={() => void changeWorkspaceSection(id)}
           role="tab"
           type="button"
         >
@@ -2872,6 +3035,7 @@ function RelayScreen({
           setDetailProfileId(null);
         }}
         onFormChange={saveRelaySettings}
+        onDirtyChange={onDirtyChange}
         onSaved={() => {
           setNewProfileDraft(null);
           setDetailProfileId(null);
@@ -2886,7 +3050,7 @@ function RelayScreen({
   }
 
   if (activeSection === "localFiles") {
-    return <>{workspaceTabs}<RelayLocalFilesPanel actions={actions} relayFiles={relayFiles} /></>;
+    return <>{workspaceTabs}<RelayLocalFilesPanel actions={actions} onDirtyChange={setWorkspaceDirty} relayFiles={relayFiles} /></>;
   }
 
   return (
@@ -3047,6 +3211,7 @@ function RelayScreen({
           onFormChange={saveRelaySettings}
           disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
           actions={actions}
+          protectedProviderIds={protectedProviderIds}
           profiles={relayProfilesForDisplay}
           reorderEnabled={relayReorderEnabled}
           view={relayListView}
@@ -3061,17 +3226,45 @@ function RelayScreen({
 
 function RelayLocalFilesPanel({
   relayFiles,
+  onDirtyChange,
   actions,
 }: {
   relayFiles: RelayFilesResult | null;
+  onDirtyChange: (dirty: boolean) => void;
   actions: Actions;
 }) {
   const [configContents, setConfigContents] = useState("");
   const [authContents, setAuthContents] = useState("");
+  const [editingUnlocked, setEditingUnlocked] = useState(false);
   useEffect(() => {
     setConfigContents(relayFiles?.configContents || "");
     setAuthContents(relayFiles?.authContents || "");
   }, [relayFiles?.authContents, relayFiles?.configContents]);
+  const configDirty = configContents !== (relayFiles?.configContents || "");
+  const authDirty = authContents !== (relayFiles?.authContents || "");
+  useEffect(() => {
+    onDirtyChange(configDirty || authDirty);
+    return () => onDirtyChange(false);
+  }, [authDirty, configDirty, onDirtyChange]);
+  const unlockEditing = async () => {
+    const confirmed = await actions.confirmAction(
+      t("解锁本机配置编辑"),
+      t("高级编辑会直接改写 ~/.codex/config.toml 和 auth.json。错误配置可能导致 Codex 无法启动，auth.json 还可能包含登录凭据。"),
+      t("解锁编辑"),
+    );
+    if (confirmed) setEditingUnlocked(true);
+  };
+  const reloadFiles = async () => {
+    if (configDirty || authDirty) {
+      const confirmed = await actions.confirmAction(
+        t("放弃本机文件更改"),
+        t("重新读取会丢弃当前未保存的 config.toml 或 auth.json 更改。"),
+        t("放弃并重新读取"),
+      );
+      if (!confirmed) return;
+    }
+    await actions.refreshRelayFiles();
+  };
   return (
     <section className="relay-workspace-panel">
       <div className="relay-workspace-head">
@@ -3079,10 +3272,27 @@ function RelayLocalFilesPanel({
           <h2>{t("本机 Codex 配置")}</h2>
           <p>{relayFiles?.configPath || t("正在读取 ~/.codex/config.toml")}</p>
         </div>
-        <Button onClick={() => void actions.refreshRelayFiles()} variant="secondary">
-          <RefreshCw className="h-4 w-4" />{t("重新读取")}
-        </Button>
+        <div className="relay-local-file-actions">
+          <Badge status={editingUnlocked ? "missing" : "ok"} />
+          {editingUnlocked ? (
+            <Button disabled={configDirty || authDirty} onClick={() => setEditingUnlocked(false)} variant="secondary">
+              <ShieldCheck className="h-4 w-4" />{t("恢复只读")}
+            </Button>
+          ) : (
+            <Button onClick={() => void unlockEditing()} variant="outline">
+              <Edit3 className="h-4 w-4" />{t("高级编辑")}
+            </Button>
+          )}
+          <Button onClick={() => void reloadFiles()} variant="secondary">
+            <RefreshCw className="h-4 w-4" />{t("重新读取")}
+          </Button>
+        </div>
       </div>
+      <p className="relay-file-readonly-note">
+        {editingUnlocked
+          ? t("高级编辑已解锁。保存前请确认 TOML / JSON 语法和凭据内容。")
+          : t("本机配置默认只读。常规供应商切换请使用供应商页面，只有排障时才解锁直接编辑。")}
+      </p>
       <div className="relay-file-grid">
         <div className="relay-file-panel">
           <div className="relay-file-head"><strong>config.toml</strong><span>{relayFiles?.configPath}</span></div>
@@ -3090,10 +3300,11 @@ function RelayLocalFilesPanel({
             aria-label="config.toml"
             className="relay-file-textarea"
             onChange={(event) => setConfigContents(event.currentTarget.value)}
+            readOnly={!editingUnlocked}
             spellCheck={false}
             value={configContents}
           />
-          <Button onClick={() => void actions.saveRelayFile("config", configContents)} size="sm">
+          <Button disabled={!editingUnlocked || !configDirty} onClick={() => void actions.saveRelayFile("config", configContents)} size="sm">
             <Save className="h-4 w-4" />{t("保存 config.toml")}
           </Button>
         </div>
@@ -3103,10 +3314,11 @@ function RelayLocalFilesPanel({
             aria-label="auth.json"
             className="relay-file-textarea"
             onChange={(event) => setAuthContents(event.currentTarget.value)}
+            readOnly={!editingUnlocked}
             spellCheck={false}
             value={authContents}
           />
-          <Button onClick={() => void actions.saveRelayFile("auth", authContents)} size="sm">
+          <Button disabled={!editingUnlocked || !authDirty} onClick={() => void actions.saveRelayFile("auth", authContents)} size="sm">
             <Save className="h-4 w-4" />{t("保存 auth.json")}
           </Button>
         </div>
@@ -3515,48 +3727,24 @@ function DeckSectionNav<T extends string>({
   );
 }
 
-type EnhanceSection = "plugins" | "conversation" | "stepwise" | "interface";
+type EnhanceSection = "advanced" | "conversation" | "interface";
 
 function EnhanceScreen({
   form,
-  pluginMarketplaceProgress,
-  remotePluginMarketplace,
-  remotePluginMarketplaceProgress,
   onFormChange,
   actions,
 }: {
   form: BackendSettings;
-  pluginMarketplaceProgress: TaskProgress;
-  remotePluginMarketplace: RemotePluginMarketplaceResult | null;
-  remotePluginMarketplaceProgress: TaskProgress;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
-  const setPersistedEnhanceFlag = (key: keyof BackendSettings, value: boolean) => {
-    const next = { ...form, [key]: value };
-    onFormChange(next);
-    void actions.saveSettingsValue(next, true);
-  };
   const masterEnabled = form.enhancementsEnabled;
-  const patchMode = form.launchMode === "patch";
-  const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
-    ? remotePluginMarketplace.configRegistered
-      ? t("已注册")
-      : t("已缓存未注册")
-    : t("未发现缓存");
-  const remoteMarketplaceSummary = remotePluginMarketplace?.marketplaceRoot
-    ? tf("已缓存 {0} 个插件 / {1} 个技能。", [
-        String(remotePluginMarketplace.pluginCount),
-        String(remotePluginMarketplace.skillCount),
-      ])
-    : t("未发现本地缓存；点击按钮会从 Codex Deck 内置快照释放并注册，无需官方账号预缓存。");
-  const [activeSection, setActiveSection] = useState<EnhanceSection>("plugins");
+  const [activeSection, setActiveSection] = useState<EnhanceSection>("conversation");
   const enhanceSections: Array<DeckSectionOption<EnhanceSection>> = [
-    { id: "plugins", label: t("插件与模型"), detail: t("市场、模型与服务档位"), icon: Boxes },
     { id: "conversation", label: t("对话与输入"), detail: t("会话、导出和输入体验"), icon: MessageCircle },
-    { id: "stepwise", label: "Stepwise", detail: t("后续建议与发送方式"), icon: Workflow },
     { id: "interface", label: t("界面与启动"), detail: t("语言、菜单和启动速度"), icon: AppWindow },
+    { id: "advanced", label: t("高级兼容"), detail: t("模型列表和系统插件守护"), icon: Boxes },
   ];
   const activeSectionOption = enhanceSections.find((section) => section.id === activeSection) ?? enhanceSections[0];
   const ActiveSectionIcon = activeSectionOption.icon;
@@ -3574,17 +3762,11 @@ function EnhanceScreen({
             />
             <span>
               <strong>{t("启用 Codex 增强")}</strong>
-              <small>{t("关闭后会停用删除、导出、项目移动、插件相关和菜单位置增强。")}</small>
+              <small>{t("关闭后会停用会话、导出和项目相关增强；原生菜单桥接保持可用。")}</small>
             </span>
           </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
           </div>
-          {form.launchMode === "relay" ? (
-            <div className="hint-line">
-              <ShieldCheck className="h-4 w-4" />
-              <span>{t("当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。")}</span>
-            </div>
-          ) : null}
         </CardContent>
       </Panel>
       <div className="deck-settings-layout">
@@ -3603,101 +3785,37 @@ function EnhanceScreen({
             </div>
           </div>
           <div className="enhance-feature-groups" data-active-section={activeSection}>
-            <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
-              <FeatureToggle title={t("强制启用 Windows Computer Use Guard")} detail={t("在非完整增强场景中继续准备 Browser、Chrome 与 Computer Use 的本地守护状态。")} checked={form.computerUseGuardEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("computerUseGuardEnabled", value)} />
-              <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-              <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
-              <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-              <FeatureToggle title={t("系统 Fast 开关")} detail={t("是否开启系统 Fast 开关：已默认开启，API Key 登录复用 Codex 原生速度选项与标识；具体 Fast / Standard 在 Codex 界面选择。")} checked={true} disabled onChange={() => {}} />
-              <div className="feature-action-row">
-                <div>
-                  <strong>{t("官方远端插件缓存")}</strong>
-                  <small>{t("使用 Codex Deck 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
-                  <small>{remoteMarketplaceSummary}</small>
-                </div>
-                <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
-                <Button
-                  disabled={remotePluginMarketplaceProgress.active}
-                  onClick={() => void actions.repairRemotePluginMarketplace()}
-                  variant="secondary"
-                >
-                  {remotePluginMarketplaceProgress.active ? t("正在处理…") : t("释放并注册内置缓存")}
-                </Button>
-                <Button
-                  disabled={remotePluginMarketplaceProgress.active}
-                  onClick={() => void actions.refreshRemotePluginMarketplace()}
-                  variant="outline"
-                >
-                  {t("刷新")}
-                </Button>
-                <span className="feature-action-status">{remoteMarketplaceStatus}</span>
-              </div>
+            <FeatureGroup title={t("高级兼容")} detail={t("仅在模型列表或系统插件识别异常时启用。") }>
+              <details className="enhance-advanced">
+                <summary>{t("兼容选项")}</summary>
+                <FeatureToggle title={t("强制启用 Windows Computer Use Guard")} detail={t("持续准备 Browser、Chrome 与 Computer Use 的本地守护状态。")} checked={form.computerUseGuardEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("computerUseGuardEnabled", value)} />
+                <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
+              </details>
             </FeatureGroup>
             <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
               <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示永久删除按钮；删除后不可撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
               <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
               <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
-              <FeatureToggle title={t("会话项目移动")} detail={t("把会话移动到普通对话或其他本地项目。")} checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
-              <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
-              <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
-              <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+              <details className="enhance-advanced">
+                <summary>{t("高级对话选项")}</summary>
+                <FeatureToggle title={t("会话项目移动")} detail={t("把会话移动到普通对话或其他本地项目。")} checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
+                <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
+                <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
+                <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+              </details>
             </FeatureGroup>
             <FeatureGroup title="Stepwise" detail={t("基于当前对话生成下一步建议，使用独立 API 配置。")}>
               <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
               <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言和启动速度；原生菜单栏集成与汉化固定启用。")}>
-              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
               <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
-              <div className="feature-action-row">
-                <div>
-                  <strong>{t("Codex 日志数据库上限")}</strong>
-                  <small>{t("0 表示关闭；超限时会在启动 Codex 前删除最旧日志并压缩数据库，不影响会话、消息和 rollout。")}</small>
-                </div>
-                <Input
-                  aria-label={t("Codex 日志数据库上限")}
-                  className="logs-db-limit-input"
-                  max={16384}
-                  min={0}
-                  step={64}
-                  type="number"
-                  value={form.codexLogsDbMaxMb}
-                  onChange={(event) => onFormChange({
-                    ...form,
-                    codexLogsDbMaxMb: clampNumber(Number(event.currentTarget.value), 0, 16384),
-                  })}
-                  onBlur={(event) => onFormChange({
-                    ...form,
-                    codexLogsDbMaxMb: normalizeLogsDbMaxMb(Number(event.currentTarget.value)),
-                  })}
-                />
-                <span className="feature-action-status">MB</span>
-              </div>
             </FeatureGroup>
             <FeatureGroup title={t("远程 Git")} detail={t("通过 upstream worktree 管理远程 Git 工作区。")}>
               <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
             </FeatureGroup>
           </div>
-          {activeSection === "plugins" ? (
-            <>
-          <div className="hint-line">
-            <Wrench className="h-4 w-4" />
-            <span>{t("新机器没有本地插件市场时，可从 openai/plugins 初始化到当前 CODEX_HOME。")}</span>
-            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
-              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
-            </Button>
-          </div>
-          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
-          <TaskProgressBox progress={remotePluginMarketplaceProgress} title={t("官方远端插件缓存进度")} />
-            </>
-          ) : null}
-          {activeSection === "plugins" ? (
-          <div className="hint-line">
-            <Info className="h-4 w-4" />
-            <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
-          </div>
-          ) : null}
         </section>
       </div>
       <div className="deck-save-bar">
@@ -4138,6 +4256,7 @@ function SessionsScreen({
 
 function MaintenanceScreen({
   overview,
+  storageHealth,
   watcher,
   settings,
   launchForm,
@@ -4147,6 +4266,7 @@ function MaintenanceScreen({
   actions,
 }: {
   overview: OverviewResult | null;
+  storageHealth: StorageHealthResult | null;
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
@@ -4156,14 +4276,11 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
-  const [maintenanceSection, setMaintenanceSection] = useState<"health" | "entrypoints" | "watcher" | "application" | "launch" | "legacyImport">("health");
+  const [maintenanceSection, setMaintenanceSection] = useState<"health" | "storage" | "startup">("health");
   const maintenanceSections: Array<DeckSectionOption<typeof maintenanceSection>> = [
     { id: "health", label: t("检查与修复"), detail: t("应用、入口和接管状态"), icon: Stethoscope },
-    { id: "entrypoints", label: t("入口管理"), detail: t("安装、修复与卸载"), icon: Link2 },
-    { id: "watcher", label: t("自动接管"), detail: t("Watcher 生命周期"), icon: ShieldCheck },
-    { id: "application", label: t("Codex 应用路径"), detail: t("识别和保存应用位置"), icon: AppWindow },
-    { id: "launch", label: t("手动启动"), detail: t("路径覆盖与调试端口"), icon: Play },
-    { id: "legacyImport", label: t("Legacy 导入"), detail: t("预览、事务与安全应用"), icon: Database },
+    { id: "storage", label: t("存储维护"), detail: t("日志与旧版备份占用"), icon: Database },
+    { id: "startup", label: t("启动与接管"), detail: t("入口、路径、Watcher 与启动参数"), icon: Rocket },
   ];
   const maintenanceStates = [
     overview?.codex_app.status === "found",
@@ -4200,96 +4317,135 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       ) : null}
-      {maintenanceSection === "entrypoints" ? (
-      <Panel>
-        <CardHead title={t("入口管理")} detail={t("快捷方式写入系统实际桌面位置，不使用写死桌面路径")} />
+      {maintenanceSection === "storage" ? (
+      <Panel className="storage-health-panel">
+        <CardHead title={t("存储维护")} detail={t("只清理明确归属 Codex Deck 的日志与旧版会话删除备份")} />
         <CardContent>
-          <label className="check-row">
-            <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>{t("卸载时移除 Codex Deck 托管数据")}</span>
-          </label>
-          <Toolbar>
-            <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复入口")}</Button>
-          </Toolbar>
-          <div className="maintenance-danger-zone">
-            <div><strong>{t("危险操作")}</strong><small>{t("卸载入口可能同时移除 Codex Deck 托管数据，请先确认上方选项。")}</small></div>
-            <Button variant="outline" onClick={() => void actions.uninstallEntrypoints()}><Trash2 className="h-4 w-4" />{t("卸载入口")}</Button>
-          </div>
-        </CardContent>
-      </Panel>
-      ) : null}
-      {maintenanceSection === "watcher" ? (
-      <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex Deck 接管状态")} />
-        <CardContent>
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
-            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      ) : null}
-      {maintenanceSection === "application" ? (
-      <Panel>
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
-            <StatusRow title={t("当前识别")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-          </div>
-          <Field label={t("保存的应用路径")}>
-            <Input
-              value={settings?.settings.codexAppPath ?? ""}
-              placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
-              readOnly
+          <div className="storage-usage-list">
+            <StorageUsageRow
+              label={t("Codex 日志数据库")}
+              usage={storageHealth?.codexLogsDb}
+              detail={storageHealth?.logsDbMaxMb ? tf("当前上限 {0}", [formatBytes(storageHealth.logsDbMaxMb * 1024 * 1024)]) : t("未启用自动限制")}
             />
-          </Field>
-          <Toolbar>
-            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
-            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
-            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      ) : null}
-      {maintenanceSection === "launch" ? (
-      <Panel>
-        <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
-        <CardContent>
-          <Field label={t("应用路径覆盖")}>
-            <Input
-              value={launchForm.appPath}
-              onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
-            />
-          </Field>
-          <div className="form-row">
-            <Field label={t("Debug 端口")}>
-              <Input
-                value={launchForm.debugPort}
-                onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
-              />
-            </Field>
-            <Field label={t("Helper 端口")}>
-              <Input
-                value={launchForm.helperPort}
-                onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
-              />
-            </Field>
+            <StorageUsageRow label={t("Codex Deck 诊断日志")} usage={storageHealth?.diagnosticLogs} />
+            <StorageUsageRow label={t("旧版会话删除备份")} usage={storageHealth?.sessionDeleteBackups} />
+            <StorageUsageRow label={t("供应商同步备份")} usage={storageHealth?.providerSyncBackups} />
+          </div>
+          <div className="storage-maintenance-result">
+            <strong>{t("上次日志维护")}</strong>
+            <span>{storageHealth?.lastLogsMaintenance ? logsMaintenanceSummary(storageHealth.lastLogsMaintenance) : t("尚未执行")}</span>
+            {storageHealth?.lastLogsMaintenance?.result ? (
+              <small>{tf("维护前 {0}，维护后 {1}，删除 {2} 行，耗时 {3} ms", [
+                formatBytes(storageHealth.lastLogsMaintenance.result.db_bytes_before),
+                formatBytes(storageHealth.lastLogsMaintenance.result.db_bytes_after),
+                storageHealth.lastLogsMaintenance.result.deleted_rows,
+                storageHealth.lastLogsMaintenance.elapsedMs,
+              ])}</small>
+            ) : null}
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
-            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
-              {t("保存为默认路径")}
+            <Button onClick={() => void actions.refreshStorageHealth()} variant="outline">
+              <RefreshCw className="h-4 w-4" />{t("重新统计")}
+            </Button>
+            <Button disabled={(storageHealth?.logsDbMaxMb ?? 0) <= 0} onClick={() => void actions.maintainLogsDbNow()}>
+              <Database className="h-4 w-4" />{t("立即维护日志数据库")}
+            </Button>
+            <Button
+              disabled={!storageHealth?.sessionDeleteBackups.files}
+              onClick={() => void actions.clearSessionDeleteBackups()}
+              variant="outline"
+            >
+              <Trash2 className="h-4 w-4" />{t("清理旧会话删除备份")}
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
       ) : null}
-      {maintenanceSection === "legacyImport" ? <LegacyImportPanel actions={actions} /> : null}
+      {maintenanceSection === "startup" ? (
+      <>
+        <Panel>
+          <CardHead title={t("启动与接管")} detail={t("先确认应用路径和入口；高级端口与 Watcher 控制默认收起")} />
+          <CardContent>
+            <div className="status-table">
+              <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
+              <StatusRow title={t("Codex Deck 入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
+              <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            </div>
+            <Field label={t("保存的应用路径")}>
+              <Input
+                value={settings?.settings.codexAppPath ?? ""}
+                placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
+                readOnly
+              />
+            </Field>
+            <Toolbar>
+              <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
+              <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
+              <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
+            </Toolbar>
+            <div className="maintenance-action-group">
+              <strong>{t("入口管理")}</strong>
+              <small>{t("快捷方式写入系统实际桌面位置，不使用写死桌面路径")}</small>
+              <Toolbar>
+                <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
+                <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复入口")}</Button>
+              </Toolbar>
+            </div>
+            <details className="maintenance-advanced">
+              <summary>{t("高级启动与接管")}</summary>
+              <Field label={t("应用路径覆盖")}>
+                <Input
+                  value={launchForm.appPath}
+                  onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
+                  placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
+                />
+              </Field>
+              <div className="form-row">
+                <Field label={t("Debug 端口")}>
+                  <Input
+                    value={launchForm.debugPort}
+                    onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
+                  />
+                </Field>
+                <Field label={t("Helper 端口")}>
+                  <Input
+                    value={launchForm.helperPort}
+                    onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
+                  />
+                </Field>
+              </div>
+              <Toolbar>
+                <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
+                  {t("保存为默认路径")}
+                </Button>
+              </Toolbar>
+              <div className="maintenance-action-group">
+                <strong>{t("自动接管")}</strong>
+                <small>{t("Watcher 用于保持 Codex Deck 接管状态")}</small>
+                <Toolbar>
+                  <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
+                  <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
+                  <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
+                  <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
+                </Toolbar>
+              </div>
+              <label className="check-row">
+                <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
+                <span>{t("卸载时移除 Codex Deck 托管数据")}</span>
+              </label>
+              <div className="maintenance-danger-zone">
+                <div><strong>{t("危险操作")}</strong><small>{t("卸载入口可能同时移除 Codex Deck 托管数据，请先确认上方选项。")}</small></div>
+                <Button variant="outline" onClick={() => void actions.uninstallEntrypoints()}><Trash2 className="h-4 w-4" />{t("卸载入口")}</Button>
+              </div>
+            </details>
+            <details className="maintenance-advanced">
+              <summary>{t("导入旧数据")}</summary>
+              <LegacyImportPanel actions={actions} />
+            </details>
+          </CardContent>
+        </Panel>
+      </>
+      ) : null}
         </div>
       </div>
       <div className="deck-save-bar maintenance-footer-bar">
@@ -4644,7 +4800,10 @@ function AboutScreen({
         <CardContent>
           <div className="metric-list">
             <Metric label={t("Codex Deck 版本")} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
+            <Metric label={t("构建提交")} value={overview?.build_commit_sha || t("未知")} />
+            <Metric label={t("当前可执行文件")} value={overview?.manager_exe_path || t("未检测到")} />
             <Metric label={t("Codex 版本")} value={overview?.codex_version ?? t("未检测到")} />
+            <Metric label={t("Codex 应用路径")} value={overview?.codex_app.path ?? t("未检测到")} />
             <Metric label={t("项目地址")} value="github.com/nanzheyin/-codexplus" />
           </div>
           <p className="about-disclaimer">{t("第三方非官方 Codex 管理工具，与 OpenAI 无隶属或背书关系。")}</p>
@@ -4703,7 +4862,7 @@ function AboutScreen({
   );
 }
 
-type SettingsSection = "general" | "vision" | "stepwise" | "appearance" | "launch";
+type SettingsSection = "general" | "advanced";
 
 function SettingsScreen({
   settings,
@@ -4721,10 +4880,7 @@ function SettingsScreen({
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const settingsSections: Array<DeckSectionOption<SettingsSection>> = [
     { id: "general", label: t("基础设置"), detail: t("主题与测试模型"), icon: Settings },
-    { id: "vision", label: t("视觉模型中转（VL）"), detail: t("图片理解与降级处理"), icon: AppWindow },
-    { id: "stepwise", label: "Stepwise", detail: t("建议生成服务配置"), icon: Workflow },
-    { id: "appearance", label: t("背景外观"), detail: t("覆盖图片与透明度"), icon: LayoutGrid },
-    { id: "launch", label: t("启动参数"), detail: t("Codex App 额外参数"), icon: Rocket },
+    { id: "advanced", label: t("高级设置"), detail: t("VL 与启动参数"), icon: Rocket },
   ];
   const activeSettingsSection = settingsSections.find((section) => section.id === settingsSection) ?? settingsSections[0];
   const normalizedPersistedSettings = settings ? normalizeSettings(settings.settings) : null;
@@ -5081,6 +5237,7 @@ function RelayProfileList({
   onEdit,
   disabled = false,
   actions,
+  protectedProviderIds,
 }: {
   form: BackendSettings;
   localRelayEnabled: boolean;
@@ -5091,6 +5248,7 @@ function RelayProfileList({
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
+  protectedProviderIds: Set<string>;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -5114,6 +5272,7 @@ function RelayProfileList({
           {profiles.map((profile) => (
             <SortableRelayProfileCard
               actions={actions}
+              protectedProviderIds={protectedProviderIds}
               form={form}
               localRelayEnabled={localRelayEnabled}
               key={profile.id}
@@ -5142,6 +5301,7 @@ function SortableRelayProfileCard({
   onEdit,
   disabled = false,
   actions,
+  protectedProviderIds,
 }: {
   form: BackendSettings;
   localRelayEnabled: boolean;
@@ -5152,6 +5312,7 @@ function SortableRelayProfileCard({
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
+  protectedProviderIds: Set<string>;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: profile.id,
@@ -5160,8 +5321,9 @@ function SortableRelayProfileCard({
   const selectedDirectProvider = profile.id === form.activeRelayId;
   const active = selectedDirectProvider && !localRelayEnabled;
   const latencyTarget = relayProfileLatencyTarget(profile);
+  const latencyRequestRef = useRef(0);
   const [latency, setLatency] = useState<{ status: "idle" | "loading" | "ok" | "failed"; latencyMs: number | null }>({
-    status: latencyTarget ? "loading" : "idle",
+    status: "idle",
     latencyMs: null,
   });
   const style: CSSProperties = {
@@ -5169,12 +5331,14 @@ function SortableRelayProfileCard({
     transition,
   };
   const refreshLatency = async () => {
+    const requestId = ++latencyRequestRef.current;
     if (!latencyTarget) {
       setLatency({ status: "idle", latencyMs: null });
       return;
     }
     setLatency({ status: "loading", latencyMs: null });
     const result = await actions.measureRelayLatency(latencyTarget);
+    if (requestId !== latencyRequestRef.current) return;
     setLatency(
       result && isSuccessStatus(result.status) && result.latencyMs !== null
         ? { status: "ok", latencyMs: result.latencyMs }
@@ -5183,25 +5347,8 @@ function SortableRelayProfileCard({
   };
 
   useEffect(() => {
-    let active = true;
-    if (!latencyTarget) {
-      setLatency({ status: "idle", latencyMs: null });
-      return () => {
-        active = false;
-      };
-    }
-    setLatency({ status: "loading", latencyMs: null });
-    void actions.measureRelayLatency(latencyTarget).then((result) => {
-      if (!active) return;
-      setLatency(
-        result && isSuccessStatus(result.status) && result.latencyMs !== null
-          ? { status: "ok", latencyMs: result.latencyMs }
-          : { status: "failed", latencyMs: null },
-      );
-    });
-    return () => {
-      active = false;
-    };
+    latencyRequestRef.current += 1;
+    setLatency({ status: "idle", latencyMs: null });
   }, [latencyTarget]);
 
   const aggregateProfile = isAggregateRelayProfile(profile);
@@ -5227,6 +5374,7 @@ function SortableRelayProfileCard({
       ? latency.latencyMs <= 450 ? "good" : latency.latencyMs <= 900 ? "warn" : "bad"
       : "muted";
   const latencyMeter = relayLatencyHealthPercent(latency.status, latency.latencyMs);
+  const deleteProtected = protectedProviderIds.has(profile.id);
   const actionButtons = (
     <>
       <Button
@@ -5287,14 +5435,20 @@ function SortableRelayProfileCard({
           <Copy className="h-4 w-4" />
         </Button>
         <Button
-          aria-label={t("删除供应商")}
-          disabled={form.relayProfiles.length <= 1}
-          onClick={(event) => {
+          aria-label={deleteProtected ? t("正在使用的供应商不能删除") : t("删除供应商")}
+          disabled={form.relayProfiles.length <= 1 || deleteProtected}
+          onClick={async (event) => {
             event.stopPropagation();
-            onFormChange(removeRelayProfile(form, profile.id));
+            if (deleteProtected) return;
+            const confirmed = await actions.confirmAction(
+              t("删除供应商"),
+              tf("删除供应商“{0}”？该配置会从 Codex Deck 中永久移除。", [profile.name || t("未命名供应商")]),
+              t("删除供应商"),
+            );
+            if (confirmed) onFormChange(removeRelayProfile(form, profile.id));
           }}
           size="icon"
-          title={t("删除供应商")}
+          title={deleteProtected ? t("该供应商正在直接使用或本地中转运行中，请先切换或停止中转") : t("删除供应商")}
           variant="ghost"
         >
           <Trash2 className="h-4 w-4" />
@@ -5478,6 +5632,7 @@ function RelayProfileDetail({
   localRelayEnabled = false,
   onBack,
   onFormChange,
+  onDirtyChange,
   onSaved,
   actions,
 }: {
@@ -5488,6 +5643,7 @@ function RelayProfileDetail({
   localRelayEnabled?: boolean;
   onBack: () => void;
   onFormChange: (value: BackendSettings) => void | Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -5502,8 +5658,14 @@ function RelayProfileDetail({
   );
   const isActive = !isNew && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
-  useEffect(() => {
-    const nextDraft = isAggregateRelayProfile(profile)
+  const baselineKey = JSON.stringify({
+    profile,
+    relayProfiles: isAggregateRelayProfile(profile) ? form.relayProfiles : null,
+    activeRelayId: form.activeRelayId,
+    relayFiles: isActive && profileUsesLiveFiles ? relayFiles : null,
+  });
+  const baselineProfile = useMemo(() => (
+    isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
       : deriveRelayProfileFromFiles(
           isActive && profileUsesLiveFiles && relayFiles
@@ -5513,17 +5675,19 @@ function RelayProfileDetail({
               authContents: relayFiles.authContents,
             }
             : profile,
-        );
-    setDraft(nextDraft);
+        )
+  ), [baselineKey]);
+  useEffect(() => {
+    setDraft(baselineProfile);
     setModelWindowRows(
       modelWindowRowsFromProfile(
-        nextDraft.modelList,
-        nextDraft.modelWindows || "",
-        nextDraft.modelImageSupport || "",
-        nextDraft.modelReasoningSupport || "",
+        baselineProfile.modelList,
+        baselineProfile.modelWindows || "",
+        baselineProfile.modelImageSupport || "",
+        baselineProfile.modelReasoningSupport || "",
       ),
     );
-  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  }, [baselineProfile]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
@@ -5535,6 +5699,25 @@ function RelayProfileDetail({
       modelReasoningSupport: serializedRows.modelReasoningSupport,
     };
   };
+  const baselineRows = serializeModelWindowRows(modelWindowRowsFromProfile(
+    baselineProfile.modelList,
+    baselineProfile.modelWindows || "",
+    baselineProfile.modelImageSupport || "",
+    baselineProfile.modelReasoningSupport || "",
+  ));
+  const currentDraftSnapshot = draftWithModelRows();
+  const baselineSnapshot = {
+    ...baselineProfile,
+    modelList: baselineRows.modelList,
+    modelWindows: baselineRows.modelWindows,
+    modelImageSupport: baselineRows.modelImageSupport,
+    modelReasoningSupport: baselineRows.modelReasoningSupport,
+  };
+  const draftDirty = JSON.stringify(currentDraftSnapshot) !== JSON.stringify(baselineSnapshot);
+  useEffect(() => {
+    onDirtyChange(draftDirty);
+    return () => onDirtyChange(false);
+  }, [draftDirty, onDirtyChange]);
   const saveDraft = async () => {
     if (validationError) return;
     const draftWithWindows = draftWithModelRows();
@@ -5551,7 +5734,20 @@ function RelayProfileDetail({
       );
       await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
     }
+    onDirtyChange(false);
     onSaved?.();
+  };
+  const requestBack = async () => {
+    if (draftDirty) {
+      const confirmed = await actions.confirmAction(
+        t("放弃供应商更改"),
+        t("这个供应商还有未保存更改。返回列表后这些更改会丢失。"),
+        t("放弃更改"),
+      );
+      if (!confirmed) return;
+    }
+    onDirtyChange(false);
+    onBack();
   };
   const switchDraft = () => {
     if (isNew || !form.relayProfilesEnabled) return;
@@ -5569,7 +5765,7 @@ function RelayProfileDetail({
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
         <Toolbar>
-          <Button onClick={onBack} variant="secondary">
+          <Button onClick={() => void requestBack()} variant="secondary">
             <ArrowLeft className="h-4 w-4" />
             {t("返回列表")}
           </Button>
@@ -6844,7 +7040,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>{t("兼容增强")}</strong>
-        <span>{t("适合官方登录或官方混入 API Key；保留会话删除、导出和项目移动，关闭插件市场相关增强。")}</span>
+        <span>{t("适合官方登录或混合 API Key；优先保留 Codex 原生行为，只加载必要的会话与输入增强。")}</span>
       </button>
       <button
         className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
@@ -6852,7 +7048,7 @@ function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions
         type="button"
       >
         <strong>{t("完整增强")}</strong>
-        <span>{t("适合纯 API；启用插件市场、会话删除导出、项目移动等全部页面能力。")}</span>
+        <span>{t("适合纯 API；启用会话删除、Markdown 导出、项目移动和完整页面增强。")}</span>
       </button>
     </div>
   );
@@ -6922,6 +7118,44 @@ function formatBytes(bytes: number) {
     index += 1;
   }
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+}
+
+function logsMaintenanceSummary(record: LogsDbMaintenanceRecord) {
+  if (record.error) return tf("上次维护失败：{0}", [record.error]);
+  const result = record.result;
+  if (!result) return t("上次维护没有返回结果");
+  if (result.status === "skipped_busy" || result.status === "partial_busy") {
+    return tf("上次维护因数据库占用而跳过或仅部分完成，耗时 {0} ms", [record.elapsedMs]);
+  }
+  if (result.status === "disabled") return t("日志数据库限制未启用");
+  if (result.status === "within_limit") {
+    return tf("上次检查未超限：{0}，耗时 {1} ms", [formatBytes(result.db_bytes_after), record.elapsedMs]);
+  }
+  return tf("上次维护：{0} → {1}，删除 {2} 行，耗时 {3} ms", [
+    formatBytes(result.db_bytes_before),
+    formatBytes(result.db_bytes_after),
+    result.deleted_rows,
+    record.elapsedMs,
+  ]);
+}
+
+function StorageUsageRow({
+  label,
+  usage,
+  detail,
+}: {
+  label: string;
+  usage?: StorageUsage;
+  detail?: string;
+}) {
+  return (
+    <div className="storage-usage-row" title={usage?.path || ""}>
+      <span><Database className="h-4 w-4" /></span>
+      <div><strong>{label}</strong><small>{detail || usage?.path || t("等待读取")}</small></div>
+      <span>{tf("{0} 个文件", [usage?.files ?? 0])}</span>
+      <strong>{formatBytes(usage?.bytes ?? 0)}</strong>
+    </div>
+  );
 }
 
 function GuideList({ items }: { items: string[] }) {
@@ -7195,20 +7429,19 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function routeTitle(route: Route) {
+function routeTitle(route: Route, moreSection: MoreSection) {
+  if (route === "more") {
+    return moreSections.find((section) => section.id === moreSection)?.label ?? t("更多");
+  }
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
 
-function routeSubtitle(route: Route) {
+function routeSubtitle(route: Route, moreSection: MoreSection) {
   const subtitles: Record<Route, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    context: t("独立管理 MCP、Skills、Plugins"),
-    enhance: t("会话删除、导出、项目移动和页面增强能力"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
-    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
-    settings: t("主题和启动参数"),
+    more: moreSections.find((section) => section.id === moreSection)?.detail ?? t("工具、增强、维护、设置与诊断"),
   };
   return subtitles[route];
 }
@@ -9019,7 +9252,14 @@ function loadInitialRoute(): Route {
   if (typeof window === "undefined") return "overview";
   const params = new URLSearchParams(window.location.search);
   if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
-    return "about";
+    return "more";
   }
   return "overview";
+}
+
+function loadInitialMoreSection(): MoreSection {
+  if (typeof window === "undefined") return "context";
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("showUpdate") === "1" || window.location.hash === "#about") return "about";
+  return "context";
 }

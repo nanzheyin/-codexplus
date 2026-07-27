@@ -10,11 +10,12 @@ pub use provider_sync::{
     ProviderSyncTargetList, ProviderSyncTargetOption, ProviderSyncTargetSource,
     SessionIndexCleanupApplyError, SessionIndexCleanupCandidate, SessionIndexCleanupPreview,
     SessionIndexCleanupResult, apply_session_index_cleanup, load_provider_sync_targets,
-    preview_session_index_cleanup, prune_deleted_thread_references, run_provider_sync,
-    run_provider_sync_with_target,
+    preview_session_index_cleanup, prune_deleted_thread_references,
+    prune_deleted_thread_references_permanently, run_provider_sync, run_provider_sync_with_target,
 };
 pub use storage::{
     LocalSession, SQLiteStorageAdapter, delete_local_from_paths,
-    delete_local_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
+    delete_local_from_paths_with_cleanup, delete_local_permanently_from_paths,
+    delete_local_permanently_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
     resolve_codex_thread_id,
 };

@@ -1056,8 +1056,6 @@ const NON_SENSITIVE_SETTING_KEYS: &[&str] = &[
     "relayProfilesEnabled",
     "enhancementsEnabled",
     "computerUseGuardEnabled",
-    "codexAppPluginMarketplaceUnlock",
-    "codexAppPluginAutoExpand",
     "codexAppModelWhitelistUnlock",
     "codexAppSessionDelete",
     "codexAppMarkdownExport",

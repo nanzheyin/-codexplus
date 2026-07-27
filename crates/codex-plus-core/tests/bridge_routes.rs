@@ -43,7 +43,6 @@ async fn bridge_routes_cover_all_current_paths() {
         ),
         ("/stepwise/test", json!({})),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
-        ("/undo", json!({"undo_token": "undo-1"})),
         (
             "/delete/resolve-thread",
             json!({"session_id": "s1", "title": "First"}),
@@ -95,7 +94,6 @@ async fn settings_get_includes_runtime_codex_app_version() {
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
-    assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(true));
     assert_eq!(result.get("codexAppForcePluginInstall"), None);
     assert_eq!(result["codexAppThreadIdBadge"], json!(false));
 }
@@ -135,13 +133,13 @@ async fn settings_set_does_not_persist_runtime_codex_app_version() {
         "/settings/set",
         json!({
             "codexAppVersion": "1.2.3",
-            "codexAppPluginMarketplaceUnlock": false
+            "codexAppModelWhitelistUnlock": true
         }),
     )
     .await;
 
     assert_eq!(result["codexAppVersion"], json!("26.601.21317"));
-    assert_eq!(result["codexAppPluginMarketplaceUnlock"], json!(false));
+    assert_eq!(result["codexAppModelWhitelistUnlock"], json!(true));
 
     let persisted = settings.settings.lock().unwrap().clone();
     let persisted_value = serde_json::to_value(persisted).unwrap();
@@ -330,24 +328,17 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
 async fn data_routes_forward_payloads_to_data_service() {
     let ctx = test_context();
 
-    assert_eq!(
-        handle_bridge_request(
-            ctx.clone(),
-            "/delete",
-            json!({"session_id": "s1", "title": "First"}),
-        )
-        .await["undo_token"],
-        "undo-s1"
-    );
+    let deleted = handle_bridge_request(
+        ctx.clone(),
+        "/delete",
+        json!({"session_id": "s1", "title": "First"}),
+    )
+    .await;
+    assert_eq!(deleted["status"], "local_deleted");
+    assert_eq!(deleted["undo_token"], Value::Null);
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/undo", json!({"undo_token": "undo-s1"})).await,
-        json!({
-            "status": "undone",
-            "session_id": "s1",
-            "message": "undone",
-            "undo_token": "undo-s1",
-            "backup_path": null
-        })
+        json!({"status": "failed", "session_id": "", "message": "Unknown bridge path"})
     );
     assert_eq!(
         handle_bridge_request(
@@ -464,7 +455,7 @@ async fn bridge_context_core_with_data_uses_injected_data_service() {
     .await;
 
     assert_eq!(result["status"], "local_deleted");
-    assert_eq!(result["undo_token"], "undo-s1");
+    assert_eq!(result["undo_token"], Value::Null);
     assert_ne!(
         result["message"],
         "Delete service is not wired in core launcher hooks"
@@ -608,7 +599,6 @@ impl BridgeSettingsService for FakeSettings {
         }
         for key in [
             "codexAppPluginEntryUnlock",
-            "codexAppPluginMarketplaceUnlock",
             "codexAppModelWhitelistUnlock",
             "codexAppSessionDelete",
             "codexAppMarkdownExport",
@@ -733,17 +723,7 @@ impl BridgeDataService for FakeData {
             status: DeleteStatus::LocalDeleted,
             session_id: session.session_id.clone(),
             message: format!("deleted {}", session.title),
-            undo_token: Some(format!("undo-{}", session.session_id)),
-            backup_path: None,
-        })
-    }
-
-    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
-        Ok(DeleteResult {
-            status: DeleteStatus::Undone,
-            session_id: "s1".to_string(),
-            message: "undone".to_string(),
-            undo_token: Some(undo_token),
+            undo_token: None,
             backup_path: None,
         })
     }

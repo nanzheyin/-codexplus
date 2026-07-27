@@ -290,9 +290,8 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains("function relayProfileSwitchCommand"));
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
     assert!(app_tsx.contains("return \"apply_relay_injection\""));
-    assert!(app_tsx.contains("const createNewAggregateProfile = () =>"));
-    assert!(app_tsx.contains("onClick={createNewAggregateProfile}"));
-    assert!(app_tsx.contains("已打开聚合供应商详情"));
+    assert!(app_tsx.contains("setNewProfileDraft(createRelayProfile(normalized))"));
+    assert!(app_tsx.contains("setOAuthDialogOpen(true)"));
     assert!(!commands_rs.contains("缺少独立 auth.json"));
     assert!(commands_rs.contains("backfill_relay_profile_from_live"));
     assert!(commands_rs.contains("apply_relay_profile_to_home_with_switch_rules"));
@@ -320,8 +319,8 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(!app_tsx.contains("<strong>Codex 上下文</strong>"));
     assert!(app_tsx.contains("id: \"context\""));
     assert!(app_tsx.contains("function ContextScreen"));
-    assert!(app_tsx.contains("route === \"context\""));
-    assert!(app_tsx.contains("if (next === \"context\")"));
+    assert!(app_tsx.contains("moreSection === \"context\""));
+    assert!(app_tsx.contains("next === \"more\" && nextMoreSection === \"context\""));
     assert!(app_tsx.contains("selectedContextConfigToml(entries)"));
     assert!(app_tsx.contains("toggleContextEntryEnabled"));
     assert!(app_tsx.contains("relayFiles={relayFiles}"));
@@ -412,7 +411,7 @@ fn manager_no_longer_exposes_mobile_control() {
 }
 
 #[test]
-fn manager_ui_no_longer_exposes_command_wrapper_or_startup_marketplace_prompt() {
+fn manager_ui_no_longer_exposes_command_wrapper() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
@@ -420,7 +419,6 @@ fn manager_ui_no_longer_exposes_command_wrapper_or_startup_marketplace_prompt() 
     assert!(!app_tsx.contains("启用 Codex 命令包装器"));
     assert!(!app_tsx.contains("修复后端"));
     assert!(!app_tsx.contains("repairBackend"));
-    assert!(!app_tsx.contains("await checkPluginMarketplacePrompt()"));
 }
 
 #[test]
@@ -429,35 +427,18 @@ fn manager_relay_profile_list_supports_create_edit_delete_select_and_sort() {
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
 
-    assert!(app_tsx.contains("createNewAggregateProfile"));
-    assert!(app_tsx.contains("onClick={createNewAggregateProfile}"));
+    assert!(app_tsx.contains("setNewProfileDraft(createRelayProfile(normalized))"));
     assert!(app_tsx.contains("relay-profile-list"));
     assert!(app_tsx.contains("relay-use-button"));
-    assert!(app_tsx.contains("active ? t(\"当前正在使用\") : t(\"设为当前\")"));
+    assert!(app_tsx.contains("active ? t(\"当前正在使用\")"));
     assert!(app_tsx.contains("aria-label={t(\"编辑\")}"));
     assert!(app_tsx.contains("aria-label={t(\"复制\")}"));
-    assert!(app_tsx.contains("aria-label={t(\"删除供应商\")}"));
+    assert!(app_tsx.contains(
+        "aria-label={deleteProtected ? t(\"正在使用的供应商不能删除\") : t(\"删除供应商\")}"
+    ));
+    assert!(app_tsx.contains("actions.confirmAction("));
+    assert!(app_tsx.contains("protectedProviderIds"));
     assert!(app_tsx.contains("aria-label={t(\"拖动排序\")}"));
-}
-
-#[test]
-fn manager_ui_exposes_plugin_marketplace_status_and_remote_cache_actions() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
-    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
-    let lib_rs =
-        std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
-
-    assert!(app_tsx.contains("plugin_marketplace_status"));
-    assert!(app_tsx.contains("repair_plugin_marketplace"));
-    assert!(app_tsx.contains("remote_plugin_marketplace_status"));
-    assert!(app_tsx.contains("repair_remote_plugin_marketplace"));
-    assert!(app_tsx.contains("释放并注册内置缓存"));
-    assert!(app_tsx.contains("官方远端插件缓存进度"));
-    assert!(lib_rs.contains("commands::plugin_marketplace_status"));
-    assert!(lib_rs.contains("commands::repair_plugin_marketplace"));
-    assert!(lib_rs.contains("commands::remote_plugin_marketplace_status"));
-    assert!(lib_rs.contains("commands::repair_remote_plugin_marketplace"));
 }
 
 #[test]

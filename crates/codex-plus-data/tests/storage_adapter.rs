@@ -1,8 +1,8 @@
 use codex_plus_core::models::{DeleteStatus, SessionRef};
 use codex_plus_data::{
     BackupStore, SQLiteStorageAdapter, delete_local_from_paths,
-    delete_local_from_paths_with_cleanup, move_codex_thread_workspace_from_paths,
-    resolve_codex_thread_id,
+    delete_local_from_paths_with_cleanup, delete_local_permanently_from_paths_with_cleanup,
+    move_codex_thread_workspace_from_paths, resolve_codex_thread_id,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -450,6 +450,49 @@ fn delete_local_from_paths_removes_duplicate_threads_from_all_databases() {
     assert_eq!(thread_count(&second_db, "t1"), 0);
     assert!(!first_rollout.exists());
     assert!(!second_rollout.exists());
+}
+
+#[test]
+fn permanent_delete_removes_duplicate_threads_and_sidebar_refs_without_backup() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let first_db = sqlite_dir.join("state_5.sqlite");
+    let second_db = home.join("state_5.sqlite");
+    let first_rollout = home.join("sessions/first.jsonl");
+    let second_rollout = home.join("sessions/second.jsonl");
+    fs::create_dir_all(first_rollout.parent().unwrap()).unwrap();
+    fs::write(&first_rollout, "{\"type\":\"message\"}\n").unwrap();
+    fs::write(&second_rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&first_db, &first_rollout);
+    create_codex_thread_db(&second_db, &second_rollout);
+    fs::write(
+        home.join("session_index.jsonl"),
+        "{\"id\":\"t1\",\"thread_name\":\"Delete me\",\"updated_at\":\"2026-07-27T00:00:00Z\"}\n{\"id\":\"t2\",\"thread_name\":\"Keep me\",\"updated_at\":\"2026-07-27T00:01:00Z\"}\n",
+    )
+    .unwrap();
+
+    let result = delete_local_permanently_from_paths_with_cleanup(
+        vec![first_db.clone(), second_db.clone()],
+        &session("local:t1", "Delete me"),
+        &home,
+    );
+
+    assert_eq!(result.status, DeleteStatus::LocalDeleted);
+    assert!(result.message.contains("2 个本地存储永久删除"));
+    assert!(result.message.contains("列表入口"));
+    assert!(result.undo_token.is_none());
+    assert!(result.backup_path.is_none());
+    assert_eq!(thread_count(&first_db, "t1"), 0);
+    assert_eq!(thread_count(&second_db, "t1"), 0);
+    assert!(!first_rollout.exists());
+    assert!(!second_rollout.exists());
+    assert!(!tmp.path().join("backups").exists());
+    assert!(!home.join("backups_state").exists());
+    let index = fs::read_to_string(home.join("session_index.jsonl")).unwrap();
+    assert!(!index.contains("\"id\":\"t1\""));
+    assert!(index.contains("\"id\":\"t2\""));
 }
 
 #[test]

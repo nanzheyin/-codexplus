@@ -10,8 +10,8 @@ use toml_edit::{DocumentMut, Item};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchMode {
-    #[default]
     Patch,
+    #[default]
     Relay,
 }
 
@@ -224,15 +224,11 @@ pub struct BackendSettings {
     pub provider_sync_last_selected_provider: String,
     #[serde(rename = "relayProfilesEnabled", default = "default_true")]
     pub relay_profiles_enabled: bool,
-    #[serde(rename = "enhancementsEnabled", default = "default_true")]
+    #[serde(rename = "enhancementsEnabled", default)]
     pub enhancements_enabled: bool,
     #[serde(rename = "computerUseGuardEnabled", default)]
     pub computer_use_guard_enabled: bool,
-    #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
-    pub codex_app_plugin_marketplace_unlock: bool,
-    #[serde(rename = "codexAppPluginAutoExpand", default = "default_true")]
-    pub codex_app_plugin_auto_expand: bool,
-    #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
+    #[serde(rename = "codexAppModelWhitelistUnlock", default)]
     pub codex_app_model_whitelist_unlock: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
     pub codex_app_session_delete: bool,
@@ -431,11 +427,9 @@ impl Default for BackendSettings {
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
             relay_profiles_enabled: true,
-            enhancements_enabled: true,
+            enhancements_enabled: false,
             computer_use_guard_enabled: false,
-            codex_app_plugin_marketplace_unlock: true,
-            codex_app_plugin_auto_expand: true,
-            codex_app_model_whitelist_unlock: true,
+            codex_app_model_whitelist_unlock: false,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
@@ -467,7 +461,7 @@ impl Default for BackendSettings {
             codex_app_image_overlay_fit_mode: default_image_overlay_fit_mode(),
             codex_goals_enabled: false,
             codex_app_goal_resume_guard: false,
-            launch_mode: LaunchMode::Patch,
+            launch_mode: LaunchMode::Relay,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
@@ -605,9 +599,6 @@ impl BackendSettings {
 
     pub fn builtin_plugin_guard_enabled(&self) -> bool {
         self.computer_use_guard_enabled
-            || (self.enhancements_enabled
-                && self.launch_mode != LaunchMode::Relay
-                && self.codex_app_plugin_marketplace_unlock)
     }
 }
 
@@ -973,8 +964,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     {
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
-    merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
-    merge_bool_setting(target, source, "codexAppPluginAutoExpand");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
@@ -1484,11 +1473,10 @@ mod tests {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
         assert!(settings.relay_profiles_enabled);
-        assert!(settings.enhancements_enabled);
+        assert!(!settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
-        assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(settings.builtin_plugin_guard_enabled());
-        assert!(settings.codex_app_plugin_auto_expand);
+        assert!(!settings.builtin_plugin_guard_enabled());
+        assert!(!settings.codex_app_model_whitelist_unlock);
         assert!(!settings.codex_app_thread_id_badge);
         assert!(settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_goals_enabled);
@@ -1496,7 +1484,7 @@ mod tests {
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
         assert!(settings.codex_app_native_menu_localization);
-        assert_eq!(settings.launch_mode, LaunchMode::Patch);
+        assert_eq!(settings.launch_mode, LaunchMode::Relay);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
@@ -1518,38 +1506,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_plugin_guard_follows_plugin_unlock_and_force_switch() {
-        assert!(BackendSettings::default().builtin_plugin_guard_enabled());
-
-        let disabled = BackendSettings {
-            codex_app_plugin_marketplace_unlock: false,
-            computer_use_guard_enabled: false,
-            ..BackendSettings::default()
-        };
-        assert!(!disabled.builtin_plugin_guard_enabled());
-
+    fn builtin_plugin_guard_follows_force_switch() {
         let force_enabled = BackendSettings {
-            codex_app_plugin_marketplace_unlock: false,
             computer_use_guard_enabled: true,
             ..BackendSettings::default()
         };
         assert!(force_enabled.builtin_plugin_guard_enabled());
-
-        let relay_mode = BackendSettings {
-            launch_mode: LaunchMode::Relay,
-            computer_use_guard_enabled: false,
-            codex_app_plugin_marketplace_unlock: true,
-            ..BackendSettings::default()
-        };
-        assert!(!relay_mode.builtin_plugin_guard_enabled());
-
-        let enhancements_disabled = BackendSettings {
-            enhancements_enabled: false,
-            computer_use_guard_enabled: false,
-            codex_app_plugin_marketplace_unlock: true,
-            ..BackendSettings::default()
-        };
-        assert!(!enhancements_disabled.builtin_plugin_guard_enabled());
     }
 
     #[test]
@@ -1568,30 +1530,6 @@ mod tests {
         assert!(saved.get("cliWrapperBaseUrl").is_none());
         assert!(saved.get("cliWrapperApiKey").is_none());
         assert!(saved.get("cliWrapperApiKeyEnv").is_none());
-    }
-
-    #[test]
-    fn settings_deserialize_keeps_plugin_marketplace_unlock_switch() {
-        let settings: BackendSettings = serde_json::from_str(
-            r#"{
-                "codexAppPluginMarketplaceUnlock": true,
-                "codexAppPluginAutoExpand": false
-            }"#,
-        )
-        .unwrap();
-
-        assert!(settings.codex_app_plugin_marketplace_unlock);
-        assert!(!settings.codex_app_plugin_auto_expand);
-
-        let legacy_settings: BackendSettings = serde_json::from_str(
-            r#"{
-                "codexAppForcePluginInstall": false
-            }"#,
-        )
-        .unwrap();
-
-        assert!(legacy_settings.codex_app_plugin_marketplace_unlock);
-        assert!(legacy_settings.codex_app_plugin_auto_expand);
     }
 
     #[test]

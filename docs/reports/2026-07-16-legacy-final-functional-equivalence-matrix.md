@@ -100,16 +100,12 @@ waived        用户明确同意不迁移，并附决策记录
 | CTX-003 | 同步 live context 与通用配置 | `sync_live_context_entries` / relay_config tests | context transaction | 必须迁移 | verified |
 | CTX-004 | 新增、编辑、启停和删除 context 项 | `upsert_context_entry` / `delete_context_entry` / relay_config tests | context packages | 必须迁移 | verified |
 | CTX-005 | 供应商切换时合并全局 context | relay context tests / provider switch tests | application policy | 必须迁移 | verified |
-| CTX-006 | 插件市场状态和本地修复 | `plugin_marketplace_status` / `repair_plugin_marketplace` | plugin adapter | 必须迁移 | verified |
-| CTX-007 | 远程插件市场状态和修复 | `remote_plugin_marketplace_status` / `repair_remote_plugin_marketplace` | plugin adapter | 必须迁移 | verified |
 
 ## 6. Codex Renderer 增强
 
 | ID | Legacy 用户能力 | 主要证据 | Deck 目标模块 | 要求 | Deck 状态 |
 | --- | --- | --- | --- | --- | --- |
 | ENH-001 | 各增强独立开关和运行时设置同步 | BackendSettings update tests / `injection_script_loads_backend_settings_before_initial_scan` | feature registry | 必须迁移 | verified |
-| ENH-002 | 插件市场解锁和兼容版本门控 | plugin marketplace command tests / version-gated plugin unlock cdp tests | plugin feature | 必须迁移 | verified |
-| ENH-003 | 插件自动展开 | `injection_script_disables_plugin_auto_expand_in_relay_mode` / manager UI smoke | plugin feature | 必须迁移 | verified |
 | ENH-004 | 自定义模型白名单和模型元数据 | `injection_script_unlocks_custom_model_catalog` / `model_ui_metadata_exposes_fast_service_tier_capability` | model feature | 必须迁移 | verified |
 | ENH-005 | 会话删除、批量删除和更多菜单动作 | `delete_local_session` tests / `manager_sessions_route_exposes_search_filter_pagination_and_cleanup_actions` / cdp action-button tests | session feature | 必须迁移 | verified |
 | ENH-006 | Markdown 导出和保存路径选择 | markdown export tests / `injection_script_prompts_for_markdown_export_path_when_supported` | session feature | 必须迁移 | verified |
@@ -194,10 +190,6 @@ open_external_url
 install_entrypoints
 uninstall_entrypoints
 repair_shortcuts
-plugin_marketplace_status
-repair_plugin_marketplace
-remote_plugin_marketplace_status
-repair_remote_plugin_marketplace
 check_update
 perform_update
 load_watcher_state

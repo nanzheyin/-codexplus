@@ -80,7 +80,6 @@ pub trait BridgeRuntimeService: Send + Sync {
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
-    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn resolve_thread_id(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn cleanup_deleted_thread(&self, session: SessionRef) -> anyhow::Result<Value>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -143,14 +142,6 @@ pub async fn handle_bridge_request(
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
         }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
-        "/undo" => {
-            let undo_token = payload
-                .get("undo_token")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            result_value(ctx.data.undo(undo_token).await)
-        }
         "/delete/resolve-thread" => {
             ctx.data
                 .resolve_thread_id(session_from_payload(&payload))
@@ -373,16 +364,6 @@ impl BridgeDataService for UnavailableDataService {
             session_id: session.session_id,
             message: "Delete service is not wired in core launcher hooks".to_string(),
             undo_token: None,
-            backup_path: None,
-        })
-    }
-
-    async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
-        Ok(DeleteResult {
-            status: DeleteStatus::Failed,
-            session_id: String::new(),
-            message: "Undo service is not wired in core launcher hooks".to_string(),
-            undo_token: Some(undo_token),
             backup_path: None,
         })
     }

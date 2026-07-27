@@ -98,6 +98,8 @@ pub struct LaunchHandle {
     pub launch: CodexLaunch,
     pub status_store: StatusStore,
     helper_started: bool,
+    codex_home: PathBuf,
+    logs_db_max_mb: u32,
     hooks: Arc<dyn LaunchHooks>,
 }
 
@@ -120,6 +122,7 @@ impl LaunchHandle {
         if self.helper_started {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
+        maintain_logs_db_after_exit(&self.codex_home, self.logs_db_max_mb).await;
         result
     }
 }
@@ -148,12 +151,6 @@ pub trait LaunchHooks: Send + Sync {
         &self,
         _settings: &BackendSettings,
         _source: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        _settings: &BackendSettings,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -342,19 +339,6 @@ where
             hooks.run_provider_sync().await?;
             log_launch_phase("provider_sync", launch_started_at, &mut phase_started_at);
         }
-        if let Err(error) = hooks.ensure_plugin_marketplace_config(&settings).await {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "launcher.plugin_marketplace_config_failed_nonfatal",
-                serde_json::json!({
-                    "message": error.to_string()
-                }),
-            );
-        }
-        log_launch_phase(
-            "plugin_marketplace_config",
-            launch_started_at,
-            &mut phase_started_at,
-        );
         if settings.builtin_plugin_guard_enabled() {
             hooks.ensure_computer_use_config(&settings).await?;
             log_launch_phase(
@@ -408,14 +392,6 @@ where
             launch_started_at,
             &mut phase_started_at,
         );
-        maintain_logs_db_before_launch(&home, settings.codex_logs_db_max_mb).await;
-        if settings.codex_logs_db_max_mb > 0 {
-            log_launch_phase(
-                "maintain_logs_database",
-                launch_started_at,
-                &mut phase_started_at,
-            );
-        }
         spawn_logs_model_suffix_cleanup_once(home.clone());
         let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
         if protocol_proxy_enabled {
@@ -512,6 +488,8 @@ where
             launch,
             status_store: status_store.clone(),
             helper_started,
+            codex_home: home,
+            logs_db_max_mb: settings.codex_logs_db_max_mb,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -580,39 +558,22 @@ fn spawn_logs_model_suffix_cleanup_once(home: PathBuf) {
     });
 }
 
-async fn maintain_logs_db_before_launch(home: &Path, max_mb: u32) {
+async fn maintain_logs_db_after_exit(home: &Path, max_mb: u32) {
     if max_mb == 0 {
         return;
     }
     let home = home.to_path_buf();
-    let started_at = Instant::now();
     match tokio::task::spawn_blocking(move || {
-        crate::codex_sqlite::maintain_logs_db_size(&home, max_mb)
+        crate::codex_sqlite::maintain_logs_db_size_recorded(&home, max_mb)
     })
     .await
     {
-        Ok(Ok(result)) => {
+        Ok(record) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "codex_sqlite.maintain_logs_db_size",
                 serde_json::json!({
-                    "status": result.status,
-                    "db_bytes_before": result.db_bytes_before,
-                    "db_bytes_after": result.db_bytes_after,
-                    "max_bytes": result.max_bytes,
-                    "target_bytes": result.target_bytes,
-                    "estimated_live_bytes": result.estimated_live_bytes,
-                    "deleted_rows": result.deleted_rows,
-                    "elapsed_ms": started_at.elapsed().as_millis(),
-                }),
-            );
-        }
-        Ok(Err(error)) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "codex_sqlite.maintain_logs_db_size_failed",
-                serde_json::json!({
-                    "max_mb": max_mb,
-                    "message": error.to_string(),
-                    "elapsed_ms": started_at.elapsed().as_millis(),
+                    "source": "after_codex_exit",
+                    "record": record,
                 }),
             );
         }
@@ -620,9 +581,9 @@ async fn maintain_logs_db_before_launch(home: &Path, max_mb: u32) {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "codex_sqlite.maintain_logs_db_size_task_failed",
                 serde_json::json!({
+                    "source": "after_codex_exit",
                     "max_mb": max_mb,
                     "message": error.to_string(),
-                    "elapsed_ms": started_at.elapsed().as_millis(),
                 }),
             );
         }
@@ -971,82 +932,6 @@ impl LaunchHooks for DefaultLaunchHooks {
         crate::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
             &home, source,
         );
-        Ok(())
-    }
-
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        if !settings.codex_app_plugin_marketplace_unlock {
-            return Ok(());
-        }
-        let home = crate::relay_config::default_codex_home_dir();
-        match crate::plugin_marketplace::ensure_openai_curated_marketplace_config(&home) {
-            Ok(configured) => {
-                if configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.openai_curated_marketplace_configured",
-                        serde_json::json!({
-                            "home": home.to_string_lossy().to_string(),
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.openai_curated_marketplace_config_failed",
-                    serde_json::json!({
-                        "home": home.to_string_lossy().to_string(),
-                        "message": error.to_string(),
-                    }),
-                );
-            }
-        }
-        match crate::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(&home) {
-            Ok(result) => {
-                if result.initialized || result.configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.openai_curated_remote_marketplace_configured",
-                        serde_json::json!({
-                            "home": home.to_string_lossy().to_string(),
-                            "initialized": result.initialized,
-                            "configured": result.configured,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.openai_curated_remote_marketplace_config_failed",
-                    serde_json::json!({
-                        "home": home.to_string_lossy().to_string(),
-                        "message": error.to_string(),
-                    }),
-                );
-            }
-        }
-        match crate::plugin_marketplace::ensure_role_specific_plugins_marketplace_config(&home) {
-            Ok(configured) => {
-                if configured {
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "launcher.role_specific_plugins_marketplace_configured",
-                        serde_json::json!({
-                            "home": home,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "launcher.role_specific_plugins_marketplace_config_failed",
-                    serde_json::json!({
-                        "home": home,
-                        "message": error.to_string(),
-                    }),
-                );
-            }
-        }
         Ok(())
     }
 

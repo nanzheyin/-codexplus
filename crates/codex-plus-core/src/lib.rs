@@ -22,7 +22,6 @@ pub mod model_suffix;
 pub mod models;
 pub mod native_menu;
 pub mod paths;
-pub mod plugin_marketplace;
 pub mod ports;
 pub mod product_identity;
 pub mod protocol_proxy;

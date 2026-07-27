@@ -51,46 +51,53 @@ pub struct OverviewPayload {
     pub silent_shortcut: PathState,
     pub management_shortcut: PathState,
     pub latest_launch: Option<LaunchStatus>,
+    pub logs_db_bytes: u64,
     pub current_version: String,
     pub update_status: String,
     pub settings_path: String,
     pub logs_path: String,
+    pub build_commit_sha: String,
+    pub manager_exe_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageUsagePayload {
+    pub path: String,
+    pub bytes: u64,
+    pub files: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageHealthPayload {
+    pub codex_logs_db: StorageUsagePayload,
+    pub diagnostic_logs: StorageUsagePayload,
+    pub session_delete_backups: StorageUsagePayload,
+    pub provider_sync_backups: StorageUsagePayload,
+    pub logs_db_max_mb: u32,
+    pub last_logs_maintenance: Option<codex_plus_core::codex_sqlite::LogsDbMaintenanceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeleteBackupCleanupPayload {
+    pub removed_files: usize,
+    pub freed_bytes: u64,
+    pub remaining: StorageUsagePayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogsDbMaintenancePayload {
+    pub maintenance: codex_plus_core::codex_sqlite::LogsDbMaintenanceRecord,
+    pub health: StorageHealthPayload,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginMarketplaceRepairPayload {
-    pub codex_home: String,
-    pub marketplace_root: Option<String>,
-    pub initialized: bool,
-    pub configured: bool,
-    pub needs_repair: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginMarketplaceStatusPayload {
-    pub codex_home: String,
-    pub marketplace_root: Option<String>,
-    pub config_registered: bool,
-    pub needs_repair: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemotePluginMarketplacePayload {
-    pub codex_home: String,
-    pub marketplace_root: Option<String>,
-    pub config_registered: bool,
-    pub needs_repair: bool,
-    pub plugin_count: usize,
-    pub skill_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -893,7 +900,7 @@ where
 #[tauri::command]
 pub async fn load_overview() -> CommandResult<OverviewPayload> {
     let payload = tauri::async_runtime::spawn_blocking(load_overview_payload).await;
-    let Ok((codex_app_path, entrypoints, latest_launch)) = payload else {
+    let Ok((codex_app_path, entrypoints, latest_launch, logs_db_bytes)) = payload else {
         return failed(
             "概览后台任务失败。",
             OverviewPayload {
@@ -902,6 +909,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
                 silent_shortcut: path_state(None),
                 management_shortcut: path_state(None),
                 latest_launch: None,
+                logs_db_bytes: 0,
                 current_version: codex_plus_core::version::VERSION.to_string(),
                 update_status: "not_checked".to_string(),
                 settings_path: codex_plus_core::paths::default_settings_path()
@@ -910,6 +918,8 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
                 logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                     .to_string_lossy()
                     .to_string(),
+                build_commit_sha: build_commit_sha(),
+                manager_exe_path: manager_exe_path(),
             },
         );
     };
@@ -923,6 +933,7 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
             silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
             management_shortcut: shortcut_state(entrypoints.management_shortcut),
             latest_launch,
+            logs_db_bytes,
             current_version: codex_plus_core::version::VERSION.to_string(),
             update_status: "not_checked".to_string(),
             settings_path: codex_plus_core::paths::default_settings_path()
@@ -931,8 +942,92 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
             logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                 .to_string_lossy()
                 .to_string(),
+            build_commit_sha: build_commit_sha(),
+            manager_exe_path: manager_exe_path(),
         },
     )
+}
+
+#[tauri::command]
+pub async fn load_storage_health() -> CommandResult<StorageHealthPayload> {
+    match tauri::async_runtime::spawn_blocking(load_storage_health_payload).await {
+        Ok(payload) => ok("存储占用已统计。", payload),
+        Err(error) => failed(
+            &format!("存储统计后台任务失败：{error}"),
+            StorageHealthPayload {
+                codex_logs_db: StorageUsagePayload::default(),
+                diagnostic_logs: StorageUsagePayload::default(),
+                session_delete_backups: StorageUsagePayload::default(),
+                provider_sync_backups: StorageUsagePayload::default(),
+                logs_db_max_mb: 0,
+                last_logs_maintenance: None,
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn clear_session_delete_backups() -> CommandResult<SessionDeleteBackupCleanupPayload> {
+    match tauri::async_runtime::spawn_blocking(clear_session_delete_backups_impl).await {
+        Ok(Ok(payload)) => ok("旧会话删除备份已清理。", payload),
+        Ok(Err(error)) => failed(
+            &format!("清理旧会话删除备份失败：{error}"),
+            SessionDeleteBackupCleanupPayload {
+                removed_files: 0,
+                freed_bytes: 0,
+                remaining: session_delete_backup_usage(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("清理后台任务失败：{error}"),
+            SessionDeleteBackupCleanupPayload {
+                removed_files: 0,
+                freed_bytes: 0,
+                remaining: session_delete_backup_usage(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn maintain_logs_db_now() -> CommandResult<LogsDbMaintenancePayload> {
+    let max_mb = SettingsStore::default()
+        .load()
+        .unwrap_or_default()
+        .codex_logs_db_max_mb;
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let task_home = home.clone();
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::codex_sqlite::maintain_logs_db_size_recorded(&task_home, max_mb)
+    })
+    .await
+    {
+        Ok(maintenance) => {
+            let health = load_storage_health_payload();
+            let payload = LogsDbMaintenancePayload {
+                maintenance: maintenance.clone(),
+                health,
+            };
+            if let Some(error) = maintenance.error {
+                failed(&format!("日志数据库维护失败：{error}"), payload)
+            } else {
+                ok("日志数据库维护已完成。", payload)
+            }
+        }
+        Err(error) => failed(
+            &format!("日志数据库维护后台任务失败：{error}"),
+            LogsDbMaintenancePayload {
+                maintenance: codex_plus_core::codex_sqlite::LogsDbMaintenanceRecord {
+                    started_at_ms: 0,
+                    elapsed_ms: 0,
+                    max_mb,
+                    result: None,
+                    error: Some(error.to_string()),
+                },
+                health: load_storage_health_payload(),
+            },
+        ),
+    }
 }
 
 #[tauri::command]
@@ -1489,11 +1584,8 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         }),
     );
     let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-    let result = codex_plus_data::delete_local_from_paths_with_cleanup(
+    let result = codex_plus_data::delete_local_permanently_from_paths_with_cleanup(
         candidate_paths.clone(),
-        codex_plus_data::BackupStore::new(
-            codex_plus_core::paths::default_app_state_dir().join("backups"),
-        ),
         &session,
         &codex_home,
     );
@@ -2021,197 +2113,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
-}
-
-#[tauri::command]
-pub fn plugin_marketplace_status() -> CommandResult<PluginMarketplaceStatusPayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    let status = codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home);
-    ok(
-        if status.needs_repair() {
-            "插件市场需要初始化或注册。"
-        } else {
-            "插件市场已可用。"
-        },
-        PluginMarketplaceStatusPayload {
-            codex_home: home.to_string_lossy().to_string(),
-            marketplace_root: status
-                .marketplace_root
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            config_registered: status.config_registered,
-            needs_repair: status.needs_repair(),
-        },
-    )
-}
-
-#[tauri::command]
-pub async fn repair_plugin_marketplace() -> CommandResult<PluginMarketplaceRepairPayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::initialize_openai_curated_marketplace_and_configure(
-        &home,
-    )
-    .await
-    {
-        Ok(result) => ok(
-            if result.initialized {
-                "插件市场已从 openai/plugins 初始化并注册。"
-            } else if result.configured {
-                "已注册本地插件市场。"
-            } else {
-                "插件市场已可用，无需修复。"
-            },
-            PluginMarketplaceRepairPayload {
-                codex_home: home.to_string_lossy().to_string(),
-                marketplace_root:
-                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                initialized: result.initialized,
-                configured: result.configured,
-                needs_repair: false,
-            },
-        ),
-        Err(error) => failed(
-            &format!("插件市场修复失败：{error}"),
-            PluginMarketplaceRepairPayload {
-                codex_home: home.to_string_lossy().to_string(),
-                marketplace_root:
-                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                initialized: false,
-                configured: false,
-                needs_repair: true,
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketplacePayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    let status =
-        codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(&home);
-    let (plugin_count, skill_count) =
-        remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-    ok(
-        if status.needs_repair() {
-            "官方远端插件缓存需要释放或注册。"
-        } else {
-            "官方远端插件缓存已可用。"
-        },
-        RemotePluginMarketplacePayload {
-            codex_home: home.to_string_lossy().to_string(),
-            marketplace_root: status
-                .marketplace_root
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            config_registered: status.config_registered,
-            needs_repair: status.needs_repair(),
-            plugin_count,
-            skill_count,
-        },
-    )
-}
-
-#[tauri::command]
-pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketplacePayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
-        &home,
-    ) {
-        Ok(result) => {
-            let status =
-                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
-                    &home,
-                );
-            let (plugin_count, skill_count) =
-                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-            ok(
-                if result.initialized {
-                    "已释放并注册内置官方远端插件缓存。"
-                } else if result.configured {
-                    "已注册官方远端插件缓存。"
-                } else {
-                    "官方远端插件缓存已可用，无需修复。"
-                },
-                RemotePluginMarketplacePayload {
-                    codex_home: home.to_string_lossy().to_string(),
-                    marketplace_root: status
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    config_registered: status.config_registered,
-                    needs_repair: status.needs_repair(),
-                    plugin_count,
-                    skill_count,
-                },
-            )
-        }
-        Err(error) => {
-            let status =
-                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
-                    &home,
-                );
-            let (plugin_count, skill_count) =
-                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-            failed(
-                &format!("官方远端插件缓存修复失败：{error}"),
-                RemotePluginMarketplacePayload {
-                    codex_home: home.to_string_lossy().to_string(),
-                    marketplace_root: status
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    config_registered: status.config_registered,
-                    needs_repair: status.needs_repair(),
-                    plugin_count,
-                    skill_count,
-                },
-            )
-        }
-    }
-}
-
-fn remote_plugin_marketplace_counts(root: Option<&Path>) -> (usize, usize) {
-    let Some(root) = root else {
-        return (0, 0);
-    };
-    let marketplace_path = root
-        .join(".agents")
-        .join("plugins")
-        .join("marketplace.json");
-    let plugin_count = std::fs::read_to_string(&marketplace_path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|marketplace| {
-            marketplace
-                .get("plugins")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-        })
-        .unwrap_or(0);
-    let skill_count = count_skill_files(&root.join("plugins")).unwrap_or(0);
-    (plugin_count, skill_count)
-}
-
-fn count_skill_files(root: &Path) -> std::io::Result<usize> {
-    if !root.is_dir() {
-        return Ok(0);
-    }
-    let mut total = 0;
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            total += count_skill_files(&path)?;
-        } else if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
-            total += 1;
-        }
-    }
-    Ok(total)
 }
 
 #[tauri::command]
@@ -3597,33 +3498,6 @@ fn finish_codex_app_state_after_provider_switch(
     settings: &BackendSettings,
     source: &str,
 ) {
-    if settings.codex_app_plugin_marketplace_unlock {
-        match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
-            home,
-        ) {
-            Ok(result) => {
-                if result.initialized || result.configured {
-                    log_manager_event(
-                        "manager.remote_plugin_marketplace_ready",
-                        json!({
-                            "source": source,
-                            "initialized": result.initialized,
-                            "configured": result.configured,
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                log_manager_event(
-                    "manager.remote_plugin_marketplace_failed",
-                    json!({
-                        "source": source,
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
-    }
     if settings.builtin_plugin_guard_enabled() {
         codex_plus_core::codex_app_state::ensure_builtin_plugin_state_after_provider_switch_nonfatal(
             home, source,
@@ -3912,8 +3786,184 @@ fn resolve_legacy_import_transaction_root(transaction_root: &str) -> anyhow::Res
     Ok(canonical_requested)
 }
 
+fn load_storage_health_payload() -> StorageHealthPayload {
+    let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    StorageHealthPayload {
+        codex_logs_db: codex_logs_db_usage(&codex_home),
+        diagnostic_logs: diagnostic_log_usage(),
+        session_delete_backups: session_delete_backup_usage(),
+        provider_sync_backups: recursive_storage_usage(
+            &codex_home.join("backups_state/provider-sync"),
+        ),
+        logs_db_max_mb: settings.codex_logs_db_max_mb,
+        last_logs_maintenance: codex_plus_core::codex_sqlite::load_logs_db_maintenance_record(
+            &codex_home,
+        )
+        .unwrap_or(None),
+    }
+}
+
+fn codex_logs_db_usage(codex_home: &Path) -> StorageUsagePayload {
+    let path = codex_plus_core::codex_sqlite::codex_logs_db_path_from_home(codex_home);
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    for candidate in codex_plus_core::codex_sqlite::codex_sqlite_sidecar_paths(&path) {
+        if let Ok(metadata) = fs::symlink_metadata(&candidate)
+            && metadata.is_file()
+            && !metadata.file_type().is_symlink()
+        {
+            bytes = bytes.saturating_add(metadata.len());
+            files += 1;
+        }
+    }
+    StorageUsagePayload {
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        files,
+    }
+}
+
+fn diagnostic_log_usage() -> StorageUsagePayload {
+    let path = codex_plus_core::paths::default_diagnostic_log_path();
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    if let Some(parent) = path.parent()
+        && let Ok(entries) = fs::read_dir(parent)
+    {
+        let base_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let rotated = name
+                .strip_prefix(&format!("{base_name}."))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+                });
+            if name != base_name && !rotated {
+                continue;
+            }
+            if let Ok(metadata) = fs::symlink_metadata(entry.path())
+                && metadata.is_file()
+                && !metadata.file_type().is_symlink()
+            {
+                bytes = bytes.saturating_add(metadata.len());
+                files += 1;
+            }
+        }
+    }
+    StorageUsagePayload {
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        files,
+    }
+}
+
+fn session_delete_backup_usage() -> StorageUsagePayload {
+    let root = codex_plus_core::paths::default_app_state_dir().join("backups");
+    let files = collect_session_delete_backup_files(&root).unwrap_or_default();
+    StorageUsagePayload {
+        path: root.to_string_lossy().to_string(),
+        bytes: files.iter().map(|(_, bytes)| *bytes).sum(),
+        files: files.len(),
+    }
+}
+
+fn recursive_storage_usage(root: &Path) -> StorageUsagePayload {
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file() {
+                bytes = bytes.saturating_add(metadata.len());
+                files += 1;
+            }
+        }
+    }
+    StorageUsagePayload {
+        path: root.to_string_lossy().to_string(),
+        bytes,
+        files,
+    }
+}
+
+fn collect_session_delete_backup_files(root: &Path) -> anyhow::Result<Vec<(PathBuf, u64)>> {
+    let root_metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        anyhow::bail!("会话删除备份目录不是普通目录：{}", root.to_string_lossy());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(ToString::to_string) else {
+            continue;
+        };
+        if !is_session_delete_backup_file_name(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        files.push((path, metadata.len()));
+    }
+    Ok(files)
+}
+
+fn is_session_delete_backup_file_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    if stem.len() != 43 || stem.as_bytes().get(10) != Some(&b'-') {
+        return false;
+    }
+    stem[..10].chars().all(|ch| ch.is_ascii_digit())
+        && stem[11..]
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
+}
+
+fn clear_session_delete_backups_impl() -> anyhow::Result<SessionDeleteBackupCleanupPayload> {
+    let root = codex_plus_core::paths::default_app_state_dir().join("backups");
+    let files = collect_session_delete_backup_files(&root)?;
+    let mut removed_files = 0usize;
+    let mut freed_bytes = 0u64;
+    for (path, bytes) in files {
+        fs::remove_file(&path)
+            .with_context(|| format!("无法删除旧会话备份 {}", path.to_string_lossy()))?;
+        removed_files += 1;
+        freed_bytes = freed_bytes.saturating_add(bytes);
+    }
+    Ok(SessionDeleteBackupCleanupPayload {
+        removed_files,
+        freed_bytes,
+        remaining: session_delete_backup_usage(),
+    })
+}
+
 fn diagnostics_report() -> String {
-    let (codex_app_path, entrypoints, latest_launch) = load_overview_payload();
+    let (codex_app_path, entrypoints, latest_launch, logs_db_bytes) = load_overview_payload();
     let overview = ok(
         "概览已加载。",
         OverviewPayload {
@@ -3924,6 +3974,7 @@ fn diagnostics_report() -> String {
             silent_shortcut: shortcut_state(entrypoints.silent_shortcut),
             management_shortcut: shortcut_state(entrypoints.management_shortcut),
             latest_launch,
+            logs_db_bytes,
             current_version: codex_plus_core::version::VERSION.to_string(),
             update_status: "not_checked".to_string(),
             settings_path: codex_plus_core::paths::default_settings_path()
@@ -3932,6 +3983,8 @@ fn diagnostics_report() -> String {
             logs_path: codex_plus_core::paths::default_diagnostic_log_path()
                 .to_string_lossy()
                 .to_string(),
+            build_commit_sha: build_commit_sha(),
+            manager_exe_path: manager_exe_path(),
         },
     );
     let settings = SettingsStore::default().load().unwrap_or_default();
@@ -3961,8 +4014,10 @@ fn load_overview_payload() -> (
     Option<PathBuf>,
     install::EntryPointState,
     Option<LaunchStatus>,
+    u64,
 ) {
     let settings = SettingsStore::default().load().unwrap_or_default();
+    let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     (
         codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
             None,
@@ -3970,7 +4025,20 @@ fn load_overview_payload() -> (
         ),
         install::inspect_entrypoints(),
         StatusStore::default().load_latest().unwrap_or(None),
+        codex_plus_core::codex_sqlite::codex_logs_db_size_bytes(&codex_home),
     )
+}
+
+fn build_commit_sha() -> String {
+    option_env!("CODEX_PLUS_BUILD_SHA")
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn manager_exe_path() -> String {
+    std::env::current_exe()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn install_background_failure(action: &str, error: impl std::fmt::Display) -> InstallActionResult {
@@ -4122,17 +4190,32 @@ mod tests {
         }
     }
 
-    fn write_local_plugin_marketplace_snapshot(home: &Path) {
-        let root = home.join(".tmp").join("plugins");
-        std::fs::create_dir_all(root.join(".agents").join("plugins")).unwrap();
-        std::fs::create_dir_all(root.join("plugins").join("gmail")).unwrap();
-        std::fs::write(
-            root.join(".agents")
-                .join("plugins")
-                .join("marketplace.json"),
-            r#"{"name":"openai-curated","plugins":[{"name":"gmail","path":"./plugins/gmail"}]}"#,
-        )
-        .unwrap();
+    #[test]
+    fn session_delete_backup_cleanup_only_removes_legacy_delete_files() {
+        let _env = test_env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let app_state = temp.path().join(".codex-deck");
+        let backups = app_state.join("backups");
+        fs::create_dir_all(&backups).unwrap();
+        let _guard = AppStateDirGuard::set(app_state);
+        let first = backups.join("1234567890-0123456789abcdef0123456789abcdef.json");
+        let second = backups.join("9876543210-fedcba9876543210fedcba9876543210.json");
+        let env_backup = backups.join("env-conflicts-123.json");
+        let unrelated = backups.join("1234567890-0123456789abcdeg0123456789abcdeg.json");
+        fs::write(&first, vec![1u8; 7]).unwrap();
+        fs::write(&second, vec![2u8; 11]).unwrap();
+        fs::write(&env_backup, b"keep").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+
+        let result = clear_session_delete_backups_impl().unwrap();
+
+        assert_eq!(result.removed_files, 2);
+        assert_eq!(result.freed_bytes, 18);
+        assert_eq!(result.remaining.files, 0);
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert!(env_backup.exists());
+        assert!(unrelated.exists());
     }
 
     fn spawn_http_server(
@@ -4386,7 +4469,6 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
             active_relay_id: active_relay_id.to_string(),
             relay_profiles,
             enhancements_enabled: false,
-            codex_app_plugin_marketplace_unlock: false,
             computer_use_guard_enabled: false,
             ..BackendSettings::default()
         }
@@ -5717,7 +5799,6 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
         )
         .unwrap();
         let settings = BackendSettings {
-            codex_app_plugin_marketplace_unlock: false,
             computer_use_guard_enabled: true,
             ..BackendSettings::default()
         };
@@ -6476,60 +6557,5 @@ model_reasoning_effort = "high"
                 .iter()
                 .any(|value| value == "apigather")
         );
-    }
-
-    #[test]
-    fn plugin_marketplace_commands_use_temp_codex_home_without_network() {
-        let _lock = test_env_lock();
-        let temp = tempfile::tempdir().unwrap();
-        let codex_home = temp.path().join("codex-home");
-        std::fs::create_dir_all(&codex_home).unwrap();
-        let _guard = CodexHomeEnvGuard::set(&codex_home);
-        write_local_plugin_marketplace_snapshot(&codex_home);
-
-        let status = plugin_marketplace_status();
-        assert_eq!(status.status, "ok");
-        assert_eq!(status.payload.codex_home, codex_home.to_string_lossy());
-        assert!(status.payload.marketplace_root.is_some());
-        assert!(!status.payload.config_registered);
-        assert!(status.payload.needs_repair);
-
-        let repair = tauri::async_runtime::block_on(repair_plugin_marketplace());
-        assert_eq!(repair.status, "ok");
-        assert_eq!(repair.payload.codex_home, codex_home.to_string_lossy());
-        assert!(!repair.payload.initialized);
-        assert!(repair.payload.configured);
-        assert!(!repair.payload.needs_repair);
-        let config = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-        assert!(config.contains("[marketplaces.openai-curated]"));
-        assert!(config.contains("[marketplaces.openai-api-curated]"));
-    }
-
-    #[test]
-    fn remote_plugin_marketplace_commands_use_embedded_snapshot() {
-        let _lock = test_env_lock();
-        let temp = tempfile::tempdir().unwrap();
-        let codex_home = temp.path().join("codex-home");
-        std::fs::create_dir_all(&codex_home).unwrap();
-        let _guard = CodexHomeEnvGuard::set(&codex_home);
-
-        let status = remote_plugin_marketplace_status();
-        assert_eq!(status.status, "ok");
-        assert_eq!(status.payload.codex_home, codex_home.to_string_lossy());
-        assert!(status.payload.marketplace_root.is_none());
-        assert!(status.payload.needs_repair);
-        assert_eq!(status.payload.plugin_count, 0);
-        assert_eq!(status.payload.skill_count, 0);
-
-        let repair = repair_remote_plugin_marketplace();
-        assert_eq!(repair.status, "ok");
-        assert_eq!(repair.payload.codex_home, codex_home.to_string_lossy());
-        assert!(repair.payload.marketplace_root.is_some());
-        assert!(repair.payload.config_registered);
-        assert!(!repair.payload.needs_repair);
-        assert!(repair.payload.plugin_count > 0);
-        assert!(repair.payload.skill_count > 0);
-        let config = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-        assert!(config.contains("[marketplaces.openai-curated-remote]"));
     }
 }

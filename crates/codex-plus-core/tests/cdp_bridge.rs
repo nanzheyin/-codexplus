@@ -374,26 +374,6 @@ fn injection_script_times_out_backend_bridge_calls_and_falls_back_to_helper() {
 }
 
 #[test]
-fn injection_script_explains_plugin_patch_is_unneeded_in_relay_mode() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("兼容增强模式下无需开启"));
-}
-
-#[test]
-fn injection_script_menu_exposes_marketplace_plugin_switch_only() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("插件市场解锁"));
-    assert!(script.contains("data-codex-plus-setting=\"pluginMarketplaceUnlock\""));
-    assert!(!script.contains("特殊插件强制安装"));
-    assert!(!script.contains("data-codex-plus-setting=\"forcePluginInstall\""));
-    assert!(!script.contains("forcePluginInstall"));
-    assert!(!script.contains("强制解锁入口"));
-    assert!(!script.contains("data-codex-plus-setting=\"pluginEntryUnlock\""));
-}
-
-#[test]
 fn injection_script_menu_exposes_stepwise_switch_and_syncs_panel() {
     let script = assets::injection_script(57321);
 
@@ -496,88 +476,6 @@ fn injection_script_ignores_stale_backend_settings_responses() {
 }
 
 #[test]
-fn injection_script_skips_plugin_patch_work_in_relay_mode() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("function pluginPatchDisabledInRelayMode()"));
-    assert!(script.contains("!codexPlusBackendSettingsLoaded"));
-    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-    assert!(script.contains("clearPluginPatchArtifacts()"));
-}
-
-#[test]
-fn injection_script_disables_plugin_auto_expand_in_relay_mode() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("settings.pluginAutoExpand = false"));
-    assert!(script.contains("if (pluginPatchDisabledInRelayMode()) return"));
-    assert!(script.contains("if (!codexPlusSettings().pluginAutoExpand) return"));
-}
-
-#[test]
-fn injection_script_scopes_plugin_auto_expand_and_chat_scans() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains(
-        "const route = `${window.location?.pathname || \"\"}${window.location?.hash || \"\"}`;"
-    ));
-    assert!(script.contains("const chatSelector = '[data-message-author-role], [data-testid=\"conversation-turn\"], main .prose';"));
-    assert!(
-        script.contains(
-            "if (!shouldScheduleScan(mutations)) return;\n    schedulePluginAutoExpand();"
-        )
-    );
-    assert!(!script.contains("const text = String(document.body?.innerText || \"\");\n    return /插件|Plugins?|Marketplace|市场/i.test(text)"));
-}
-
-#[test]
-fn injection_script_defines_version_gated_plugin_unlock_strategy() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("codexPluginLegacyEntryUnlockBeforeVersion = \"26.601.2237\""));
-    assert!(script.contains("function parseCodexVersionParts(version)"));
-    assert!(script.contains("function compareCodexVersions(left, right)"));
-    assert!(script.contains("function codexPluginUnlockStrategy()"));
-    assert!(script.contains("const comparison = compareCodexVersions(version, codexPluginLegacyEntryUnlockBeforeVersion)"));
-    assert!(script.contains("return comparison < 0 ? \"legacy\" : \"modern\""));
-}
-
-#[test]
-fn injection_script_gates_legacy_and_modern_plugin_unlock_by_codex_version() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("const pluginUnlockStrategy = codexPluginUnlockStrategy()"));
-    assert!(script.contains("if ((pluginUnlockStrategy === \"modern\" || pluginUnlockStrategy === \"unknown\") && settings.pluginMarketplaceUnlock)"));
-    assert!(script.contains("plugin_unlock_strategy_selected"));
-    assert!(script.contains("window.__codexPluginUnlockStrategyLogged"));
-}
-
-#[test]
-fn injection_script_removes_legacy_plugin_sidebar_entry_unlock() {
-    let script = assets::injection_script(57321);
-
-    assert!(!script.contains("pluginEntryUnlock"));
-    assert!(!script.contains("codexAppPluginEntryUnlock"));
-    assert!(!script.contains("function spoofChatGPTAuthMethod(element)"));
-    assert!(!script.contains("auth.setAuthMethod(\"chatgpt\")"));
-    assert!(!script.contains("function pluginEntryButton()"));
-    assert!(!script.contains("function enablePluginEntry()"));
-    assert!(!script.contains("插件 - 已解锁"));
-    assert!(!script.contains("Plugins - Unlocked"));
-}
-
-#[test]
-fn injection_script_keeps_plugin_marketplace_unlock_separate_from_entry_unlock() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("pluginMarketplaceUnlock: true"));
-    assert!(script.contains("pluginMarketplaceUnlock: \"codexAppPluginMarketplaceUnlock\""));
-    assert!(script.contains("if (!codexPlusSettings().pluginMarketplaceUnlock) return"));
-    assert!(script.contains("installPluginBuildFlavorFilterPatch"));
-    assert!(script.contains("installPluginMarketplaceRequestPatch"));
-}
-
-#[test]
 fn injection_script_localizes_codex_menu_commands() {
     let script = assets::injection_script(57321);
 
@@ -593,141 +491,6 @@ fn injection_script_localizes_codex_menu_commands() {
     assert!(script.contains("[\"Actual Size\", \"实际大小\"]"));
     assert!(script.contains("function localizeCodexMenus"));
     assert!(script.contains("localizeCodexMenus();"));
-}
-
-#[test]
-fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("button[aria-disabled=\"true\"]"));
-    assert!(script.contains("[role=\"button\"][data-disabled]"));
-    assert!(!script.contains("installButtonUnlockNodes"));
-    assert!(!script.contains("patchReactDisabledProps"));
-    assert!(!script.contains("props[\"data-disabled\"] = undefined"));
-    assert!(!script.contains("button.querySelectorAll?.(\"button, [role='button'], [disabled], [aria-disabled], [data-disabled]"));
-    assert!(!script.contains("button.dataset.codexForceInstallUnlocked"));
-}
-
-#[test]
-fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
-    assert!(!script.contains("function pluginMarketplaceAliasForName"));
-    assert!(
-        !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
-    );
-    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(Codex++)\""));
-}
-
-#[test]
-fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
-    assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
-    assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
-    assert!(!script.contains("if (!source.includes(\"marketplaceName\")) return false"));
-    assert!(!script.contains("if (!source.includes(\"name\")) return false"));
-}
-
-#[test]
-fn injection_script_expands_api_key_plugin_marketplace_requests() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"13\""));
-    assert!(script.contains("installPluginMarketplaceRequestPatch"));
-    assert!(script.contains("installPluginMarketplaceBridgePatch"));
-    assert!(script.contains("installPluginBuildFlavorFilterPatch"));
-    assert!(script.contains("Array.prototype.filter"));
-    assert!(script.contains("codexPluginBuildFlavorFilterPatch"));
-    assert!(script.contains("isCodexPluginBuildFlavorFilter"));
-    assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(plugin?.marketplaceName) && !callback(plugin)"
-    ));
-    assert!(script.contains("isCodexPluginMarketplaceHiddenFilter"));
-    assert!(script.contains(
-        "codexPluginOfficialMarketplaceName(marketplace?.name) && !callback(marketplace)"
-    ));
-    assert!(script.contains("plugin_marketplace_hidden_filter_bypassed"));
-    assert!(script.contains("method === \"list-plugins\""));
-    assert!(script.contains("method === \"vscode://codex/list-plugins\""));
-    assert!(script.contains("message.type === \"fetch\""));
-    assert!(script.contains("data?.type === \"fetch-response\""));
-    assert!(script.contains("__codexPluginMarketplaceFetchRequestIds"));
-    assert!(script.contains("const nextKinds = Array.isArray(next.marketplaceKinds)"));
-    assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
-    assert!(script.contains("next.marketplaceKinds = Array.from(new Set(nextKinds))"));
-    assert!(script.contains("patchPluginMarketplaceResult"));
-    assert!(script.contains("__CODEX_PLUS_PLUGIN_MARKETPLACES__"));
-    assert!(script.contains("mergeLocalPluginMarketplaces(result)"));
-    assert!(script.contains("plugin_marketplace_local_merged"));
-    assert!(script.contains("patchGuardedBuiltinPluginAvailability"));
-    assert!(script.contains("plugin_builtin_availability_repaired"));
-    assert!(script.contains("new Set([\"browser\", \"chrome\", \"computer-use\"])"));
-    assert!(script.contains("installation: \"AVAILABLE\""));
-    assert!(script.contains("cloned.marketplaceName = marketplaceName"));
-    assert!(script.contains("cloned.marketplacePath = marketplaceName"));
-    assert!(script.contains("restorePluginMarketplaceName"));
-    assert!(script.contains(
-        "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
-    ));
-    assert!(!script.contains("marketplace.name = alias"));
-    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(Codex++)\""));
-    assert!(
-        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(Codex++)\"")
-    );
-    assert!(script.contains("restored === \"openai-api-curated\""));
-    assert!(script.contains("restored === \"openai-curated-remote\""));
-    assert!(
-        script.contains("if (name === \"openai-curated-remote\") return \"OpenAI插件5(Codex++)\"")
-    );
-    assert!(script.contains(
-        "if (name === \"codex-plus-openai-curated-remote\") return \"openai-curated-remote\""
-    ));
-    assert!(script.contains("OpenAI插件1(Codex++)"));
-    assert!(script.contains("OpenAI插件2(Codex++)"));
-    assert!(script.contains("OpenAI插件3(Codex++)"));
-    assert!(script.contains("method === \"install-plugin\""));
-    assert!(script.contains("plugin_marketplace_response_expanded"));
-    assert!(script.contains("plugin_build_flavor_filter_bypassed"));
-    assert!(script.contains("plugin_install_request_debug"));
-    assert!(script.contains("plugin_install_request_failed"));
-    assert!(!script.contains("marketplace.path ="));
-    assert!(!script.contains("codexPluginMarketplacePathAliasForName"));
-    assert!(!script.contains("spoofAnyCodexAuthContext"));
-}
-
-#[test]
-fn injection_script_preserves_vertical_marketplace_kind_for_official_plugins() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("plugin_marketplace_request_expanded"));
-    assert!(script.contains("if (!nextKinds.includes(\"vertical\")) nextKinds.push(\"vertical\")"));
-    assert!(!script.contains("codexPluginAllowedMarketplaceKinds"));
-    assert!(!script.contains("codexPluginExpandedMarketplaceKinds"));
-    assert!(!script.contains("delete next.marketplaceKinds"));
-}
-
-#[test]
-fn injection_script_logs_marketplace_grouping_diagnostics() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("plugin_marketplace_response_debug"));
-    assert!(script.contains("marketplaces: result.marketplaces.map"));
-    assert!(script.contains("pluginMarketplaceCounts"));
-    assert!(script.contains("remoteMarketplaceName"));
-}
-
-#[test]
-fn injection_script_omits_force_install_unlock_loop() {
-    let script = assets::injection_script(57321);
-
-    assert!(!script.contains("codex-force-install-unlocked"));
-    assert!(!script.contains("codexForcePluginInstallRefreshIntervalMs"));
-    assert!(!script.contains("refreshForcePluginInstallUnlockLoop"));
-    assert!(!script.contains("__codexForcePluginInstallRefreshTimer"));
 }
 
 #[test]
@@ -988,7 +751,6 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("dispatcher export unavailable"));
     assert!(script.contains("codexServiceTierDispatcherRetryDelaysMs"));
     assert!(script.contains("if (!codexPlusSettings().serviceTierControls) return;"));
-    assert!(script.contains("if (!currentSignature)"));
     assert!(!script.contains("data-codex-max-reasoning-control"));
     assert!(!script.contains("codexAppMaxReasoningOverride"));
 }
@@ -1161,6 +923,7 @@ globalThis.navigator = {{ userAgent: "node-test" }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
 require(scriptPath);
 const api = window.__codexPlusServiceTierTest;
+api.setBackendReady();
 api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
 
@@ -1412,6 +1175,7 @@ globalThis.navigator = {{ userAgent: "node-test" }};
 globalThis.performance = {{ getEntriesByType: () => [] }};
 require(scriptPath);
 const api = window.__codexPlusProjectlessTest;
+api.setBackendReady();
 const englishNewTask = api.triggerKind(trigger("New task"));
 const chineseNewTask = api.triggerKind(trigger("新建任务\nCtrl+N"));
 const compactChineseNewTask = api.triggerKind(trigger("新建任务Ctrl+N"));
@@ -1559,19 +1323,6 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
     assert!(source.contains("纯 API"));
     assert!(source.contains("apply_pure_api_injection"));
     assert!(commands.contains("commands::apply_pure_api_injection"));
-}
-
-#[test]
-fn manager_ui_disables_plugin_auto_expand_in_compatible_mode() {
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("core crate should live under crates/codex-plus-core");
-    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
-
-    assert!(source.contains(
-        "checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode}"
-    ));
 }
 
 #[test]

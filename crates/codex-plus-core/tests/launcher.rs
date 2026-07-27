@@ -553,14 +553,6 @@ fn launcher_no_longer_contains_mobile_control_runtime() {
 }
 
 #[test]
-fn launcher_plugin_marketplace_unlock_repairs_role_specific_plugins() {
-    let launcher_source = include_str!("../src/launcher.rs");
-
-    assert!(launcher_source.contains("ensure_openai_curated_marketplace_config(&home)"));
-    assert!(launcher_source.contains("ensure_role_specific_plugins_marketplace_config(&home)"));
-}
-
-#[test]
 fn app_paths_parse_appx_install_location_from_powershell_output() {
     let output =
         "\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_26.611.7849.0_x64__2p2nqsd0c76g0\r\n";
@@ -741,7 +733,6 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             provider_sync_enabled: true,
             relay_profiles_enabled: true,
             computer_use_guard_enabled: true,
-            codex_app_plugin_marketplace_unlock: true,
             ..BackendSettings::default()
         })
         .with_launch_result(CodexLaunch::Process {
@@ -987,42 +978,13 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_runs_builtin_plugin_guard_with_plugin_unlock_by_default() {
-    let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("Codex.app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
-    let events = Arc::new(Mutex::new(Vec::<String>::new()));
-    let hooks = FakeHooks::new(events.clone());
-
-    let handle = launch_and_inject_with_hooks(
-        LaunchOptions {
-            app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
-            status_store,
-        },
-        &hooks,
-    )
-    .await
-    .unwrap();
-    handle.wait_for_codex_exit().await.unwrap();
-
-    let events = events.lock().unwrap().clone();
-    assert!(events.contains(&"computer-use-guard".to_string()));
-    assert!(events.contains(&"computer-use-guard-watchdog".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
-}
-
-#[tokio::test]
-async fn launch_lifecycle_skips_builtin_plugin_guard_when_unlock_and_guard_are_disabled() {
+async fn launch_lifecycle_skips_builtin_plugin_guard_when_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
     let status_store = StatusStore::new(temp.path().join("latest-status.json"));
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
-        codex_app_plugin_marketplace_unlock: false,
         computer_use_guard_enabled: false,
         ..BackendSettings::default()
     });
@@ -1184,10 +1146,8 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
-            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "status:running_degraded",
         ]
@@ -1231,7 +1191,6 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
             "shutdown-helper:57321",
@@ -1342,10 +1301,8 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-debug:9229",
             "select-helper:57321",
             "load-settings",
-            "computer-use-guard",
             "start-helper:57321",
             "launch:9229",
-            "computer-use-guard-watchdog",
             "inject:9229:57321",
             "shutdown-helper:57321",
             "terminate-packaged:4242",
@@ -1406,42 +1363,6 @@ async fn default_provider_sync_enabled_fails_instead_of_silently_skipping() {
     );
 }
 
-#[tokio::test]
-async fn launch_continues_when_plugin_marketplace_config_fails() {
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let hooks = FakeHooks::new(events.clone())
-        .with_plugin_marketplace_error("config.toml TOML parse failed");
-
-    let handle = launch_and_inject_with_hooks(
-        LaunchOptions {
-            app_dir: Some(PathBuf::from("/Applications/Codex.app")),
-            debug_port: 9229,
-            helper_port: 57321,
-            status_store: StatusStore::new(tempfile::tempdir().unwrap().path().join("status.json")),
-        },
-        &hooks,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(handle.debug_port, 9229);
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        [
-            "select-debug:9229",
-            "select-helper:57321",
-            "load-settings",
-            "plugin-marketplace",
-            "computer-use-guard",
-            "start-helper:57321",
-            "launch:9229",
-            "computer-use-guard-watchdog",
-            "inject:9229:57321",
-            "status:running"
-        ]
-    );
-}
-
 #[test]
 fn launcher_macos_cleanup_command_targets_specific_app_bundle() {
     let command = build_macos_cleanup_command(
@@ -1488,7 +1409,6 @@ struct FakeHooks {
     launch_error: Option<String>,
     inject_error: Option<String>,
     provider_sync_unsupported: bool,
-    plugin_marketplace_error: Option<String>,
 }
 
 impl FakeHooks {
@@ -1505,7 +1425,6 @@ impl FakeHooks {
             launch_error: None,
             inject_error: None,
             provider_sync_unsupported: false,
-            plugin_marketplace_error: None,
         }
     }
 
@@ -1531,11 +1450,6 @@ impl FakeHooks {
 
     fn with_provider_sync_unsupported(mut self) -> Self {
         self.provider_sync_unsupported = true;
-        self
-    }
-
-    fn with_plugin_marketplace_error(mut self, message: &str) -> Self {
-        self.plugin_marketplace_error = Some(message.to_string());
         self
     }
 
@@ -1602,17 +1516,6 @@ impl LaunchHooks for FakeHooks {
         source: &str,
     ) -> anyhow::Result<()> {
         self.event(format!("builtin-plugin-state:{source}"));
-        Ok(())
-    }
-
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        _settings: &BackendSettings,
-    ) -> anyhow::Result<()> {
-        if let Some(message) = &self.plugin_marketplace_error {
-            self.event("plugin-marketplace");
-            anyhow::bail!(message.clone());
-        }
         Ok(())
     }
 

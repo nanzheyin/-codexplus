@@ -163,6 +163,21 @@ pub fn prune_app_state_thread_references(
     home: &Path,
     thread_ids: &[String],
 ) -> anyhow::Result<AppStateThreadPruneResult> {
+    prune_app_state_thread_references_inner(home, thread_ids, true)
+}
+
+pub fn prune_app_state_thread_references_permanently(
+    home: &Path,
+    thread_ids: &[String],
+) -> anyhow::Result<AppStateThreadPruneResult> {
+    prune_app_state_thread_references_inner(home, thread_ids, false)
+}
+
+fn prune_app_state_thread_references_inner(
+    home: &Path,
+    thread_ids: &[String],
+    create_undo_backup: bool,
+) -> anyhow::Result<AppStateThreadPruneResult> {
     let thread_ids = thread_id_match_set(thread_ids);
     if thread_ids.is_empty() {
         return Ok(AppStateThreadPruneResult {
@@ -229,7 +244,11 @@ pub fn prune_app_state_thread_references(
         });
     }
 
-    let backup_path = create_backup(home, &original)?;
+    let backup_path = if create_undo_backup {
+        Some(create_backup(home, &original)?)
+    } else {
+        None
+    };
     let next = Value::Object(state);
     let text = serde_json::to_string_pretty(&next)?;
     let state_path = state_path(home);
@@ -243,7 +262,7 @@ pub fn prune_app_state_thread_references(
     Ok(AppStateThreadPruneResult {
         changed: true,
         changed_keys: changed_keys.into_iter().collect(),
-        backup_path: Some(backup_path),
+        backup_path,
         snapshot_path,
     })
 }

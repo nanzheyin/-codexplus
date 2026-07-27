@@ -932,17 +932,39 @@ pub fn prune_deleted_thread_references(
     codex_home: &Path,
     thread_ids: &[String],
 ) -> anyhow::Result<DeletedThreadReferencePruneResult> {
+    prune_deleted_thread_references_inner(codex_home, thread_ids, true)
+}
+
+pub fn prune_deleted_thread_references_permanently(
+    codex_home: &Path,
+    thread_ids: &[String],
+) -> anyhow::Result<DeletedThreadReferencePruneResult> {
+    prune_deleted_thread_references_inner(codex_home, thread_ids, false)
+}
+
+fn prune_deleted_thread_references_inner(
+    codex_home: &Path,
+    thread_ids: &[String],
+    create_undo_backup: bool,
+) -> anyhow::Result<DeletedThreadReferencePruneResult> {
     let thread_ids = thread_id_match_set(thread_ids);
     if thread_ids.is_empty() {
         return Ok(DeletedThreadReferencePruneResult::default());
     }
     let (pruned_session_index_entries, session_index_backup_dir) =
-        prune_deleted_session_index_entries(codex_home, &thread_ids)?;
+        prune_deleted_session_index_entries(codex_home, &thread_ids, create_undo_backup)?;
     let selected_ids = thread_ids.iter().cloned().collect::<Vec<_>>();
-    let app_state_prune = codex_plus_core::codex_app_state::prune_app_state_thread_references(
-        codex_home,
-        &selected_ids,
-    )?;
+    let app_state_prune = if create_undo_backup {
+        codex_plus_core::codex_app_state::prune_app_state_thread_references(
+            codex_home,
+            &selected_ids,
+        )?
+    } else {
+        codex_plus_core::codex_app_state::prune_app_state_thread_references_permanently(
+            codex_home,
+            &selected_ids,
+        )?
+    };
     Ok(DeletedThreadReferencePruneResult {
         pruned_session_index_entries,
         session_index_backup_dir,
@@ -954,6 +976,7 @@ pub fn prune_deleted_thread_references(
 fn prune_deleted_session_index_entries(
     home: &Path,
     thread_ids: &HashSet<String>,
+    create_undo_backup: bool,
 ) -> anyhow::Result<(usize, Option<PathBuf>)> {
     let path = home.join("session_index.jsonl");
     if !path.exists() {
@@ -973,11 +996,17 @@ fn prune_deleted_session_index_entries(
     if removed_entries == 0 {
         return Ok((0, None));
     }
-    let backup_dir = create_session_index_cleanup_backup(home, &plan, removed_entries)
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let backup_dir = if create_undo_backup {
+        Some(
+            create_session_index_cleanup_backup(home, &plan, removed_entries)
+                .map_err(|error| anyhow::anyhow!(error.message))?,
+        )
+    } else {
+        None
+    };
     codex_plus_core::settings::atomic_write(&plan.path, next_text.as_bytes())
         .map_err(|error| anyhow::anyhow!("{error}"))?;
-    Ok((removed_entries, Some(backup_dir)))
+    Ok((removed_entries, backup_dir))
 }
 
 fn thread_id_match_set(thread_ids: &[String]) -> HashSet<String> {

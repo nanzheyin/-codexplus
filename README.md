@@ -193,7 +193,7 @@ Telegram 频道：<https://t.me/CodexPlusPlus>
 | 供应商配置 | 官方登录、官方登录混入 API、纯 API、聚合供应商；Responses / Chat Completions；模型测试、模型列表、Provider Doctor、cc-switch 与链接导入 |
 | 模型与上下文 | 每模型上下文窗口、自动压缩阈值、`model_catalog_json`、通用配置，以及按供应商选择 MCP、Skill 和 Plugin |
 | 会话管理 | 扫描本地会话、批量删除、Markdown 导出、Token 用量历史、Provider metadata 同步与备份 |
-| Codex 增强 | 插件市场与模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、图片覆盖层 |
+| Codex 增强 | 模型白名单、会话操作、粘贴修复、中文界面、快速启动、会话宽度与滚动恢复、服务层级控制、Goals、Stepwise、图片覆盖层 |
 | 开发工作流 | 项目移动、Upstream worktree 与线程 ID |
 | 维护 | 应用检测、快捷方式、Watcher、环境冲突、日志诊断、健康检查和 Release 更新 |
 
@@ -219,7 +219,7 @@ Codex++ 将官方登录、混入 API 和纯 API 分开保存和切换：
 ## Codex 界面增强
 
 - 会话删除、批量删除、Markdown 导出和项目移动。
-- 插件市场解锁、插件自动展开和模型白名单处理。
+- 模型白名单与模型元数据处理。
 - 富文本粘贴转纯文本、强制中文、启动加速和原生菜单本地化。
 - 会话宽度、滚动位置恢复、线程 ID、服务层级切换和 Goals。
 - Stepwise 下一步建议，可单独配置 API、模型、建议数量与超时。
