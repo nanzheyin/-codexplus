@@ -323,10 +323,17 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let _ = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        Ok(())
+        let codex_home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let sync = tokio::task::spawn_blocking(move || {
+            codex_plus_data::run_provider_sync(Some(&codex_home))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
+        if matches!(sync.status, codex_plus_data::ProviderSyncStatus::Synced) {
+            Ok(())
+        } else {
+            anyhow::bail!("历史会话恢复未完成：{}", sync.message)
+        }
     }
 
     async fn apply_active_relay_profile(

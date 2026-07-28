@@ -2022,35 +2022,48 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
     match result {
         Ok(sync) => {
-            if is_success_sync_status(&sync.status) {
+            let succeeded = is_success_sync_status(&sync.status);
+            if succeeded {
                 persist_provider_sync_selection(
                     target_for_settings
                         .as_deref()
                         .unwrap_or(&sync.target_provider),
                 );
             }
-            ok(
-                &format!(
-                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+            let message = if succeeded {
+                format!(
+                    "历史会话恢复完成：修复 {} 个会话文件，恢复 {} 条侧边栏索引，更新 {} 行数据库，合并 {} 条重复来源。",
                     sync.changed_session_files,
+                    sync.sqlite_catalog_rows_inserted,
                     sync.sqlite_rows_updated,
-                    sync.skipped_locked_rollout_files.len()
-                ),
-                json!({
-                    "syncStatus": sync.status,
-                    "targetProvider": sync.target_provider,
-                    "changedSessionFiles": sync.changed_session_files,
-                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
-                    "sqliteRowsUpdated": sync.sqlite_rows_updated,
-                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
-                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
-                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
-                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
-                    "encryptedContentWarning": sync.encrypted_content_warning,
-                    "backupDir": sync.backup_dir,
-                    "syncMessage": sync.message,
-                }),
-            )
+                    sync.duplicate_thread_rows_merged,
+                )
+            } else {
+                format!("历史会话恢复未完成：{}", sync.message)
+            };
+            let payload = json!({
+                "syncStatus": sync.status,
+                "targetProvider": sync.target_provider,
+                "changedSessionFiles": sync.changed_session_files,
+                "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+                "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                "sqliteCatalogProviderRowsUpdated": sync.sqlite_catalog_provider_rows_updated,
+                "sqliteCatalogRowsInserted": sync.sqlite_catalog_rows_inserted,
+                "sqliteCatalogStateRowsUpdated": sync.sqlite_catalog_state_rows_updated,
+                "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+                "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                "duplicateThreadRowsMerged": sync.duplicate_thread_rows_merged,
+                "updatedWorkspaceRoots": sync.updated_workspace_roots,
+                "encryptedContentWarning": sync.encrypted_content_warning,
+                "backupDir": sync.backup_dir,
+                "syncMessage": sync.message,
+            });
+            if succeeded {
+                ok(&message, payload)
+            } else {
+                failed(&message, payload)
+            }
         }
         Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
     }
@@ -6557,5 +6570,25 @@ model_reasoning_effort = "high"
                 .iter()
                 .any(|value| value == "apigather")
         );
+    }
+
+    #[test]
+    fn sync_providers_now_reports_skipped_core_result_as_failed() {
+        let _lock = test_env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir_all(codex_home.join("tmp/provider-sync.lock")).unwrap();
+        std::fs::write(
+            codex_home.join("config.toml"),
+            "model_provider = \"custom\"\n",
+        )
+        .unwrap();
+        let _home_guard = CodexHomeEnvGuard::set(&codex_home);
+
+        let result = tauri::async_runtime::block_on(sync_providers_now(None));
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.payload["syncStatus"], json!("skipped"));
+        assert!(result.message.contains("历史会话恢复未完成"));
     }
 }

@@ -643,13 +643,18 @@ type RemoveEnvConflictsResult = CommandResult<{
 
 type ProviderSyncPayload = {
   syncStatus?: string;
+  syncMessage?: string;
   targetProvider?: string;
   changedSessionFiles?: number;
   skippedLockedRolloutFiles?: string[];
   sqliteRowsUpdated?: number;
   sqliteProviderRowsUpdated?: number;
+  sqliteCatalogProviderRowsUpdated?: number;
+  sqliteCatalogRowsInserted?: number;
+  sqliteCatalogStateRowsUpdated?: number;
   sqliteUserEventRowsUpdated?: number;
   sqliteCwdRowsUpdated?: number;
+  duplicateThreadRowsMerged?: number;
   updatedWorkspaceRoots?: number;
   prunedSessionIndexEntries?: number;
   encryptedContentWarning?: string | null;
@@ -735,19 +740,28 @@ type UpdateResult = CommandResult<{
 }>;
 
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
+  if (!isSuccessStatus(result.status) || result.syncStatus !== "synced") {
+    return result.message || t("历史会话恢复未完成，请根据提示重试。");
+  }
   const changed = result.changedSessionFiles ?? 0;
   const rows = result.sqliteRowsUpdated ?? 0;
+  const recovered = result.sqliteCatalogRowsInserted ?? 0;
+  const merged = result.duplicateThreadRowsMerged ?? 0;
   const pruned = result.prunedSessionIndexEntries ?? 0;
   const target = result.targetProvider || t("当前 provider");
   const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
   const prunedText = pruned ? tf("，清理 {0} 条失效任务索引", [pruned]) : "";
   const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}。", [
+  const restartText = recovered ? t("，重启 Codex 后侧边栏会重新载入") : "";
+  return tf("已同步到 {0}：修复 {1} 个会话文件，恢复 {2} 条侧边栏索引，更新 {3} 行数据库，合并 {4} 条重复来源{5}{6}{7}。", [
     target,
     changed,
+    recovered,
     rows,
+    merged,
     prunedText,
     skippedText,
+    restartText,
   ]);
 }
 
@@ -797,6 +811,7 @@ const settingsAreaSections: Array<DeckSectionOption<Exclude<MoreSection, "contex
 
 const VERIFIED_CONNECTION_STORAGE_KEY = "codex-plus-verified-connection";
 const EXPERIENCE_MODE_STORAGE_KEY = "codex-plus-experience-mode";
+const SESSION_REPAIR_COMPLETED_STORAGE_KEY = "codex-plus-session-repair-completed";
 
 const defaultSettings: BackendSettings = {
   codexAppPath: "",
@@ -886,6 +901,9 @@ export function App() {
   const [experienceMode, setExperienceMode] = useState<ExperienceMode | null>(() => loadInitialExperienceMode());
   const [verifiedConnectionFingerprint, setVerifiedConnectionFingerprint] = useState(() =>
     typeof window === "undefined" ? "" : window.localStorage.getItem(VERIFIED_CONNECTION_STORAGE_KEY) ?? "",
+  );
+  const [sessionRepairCompleted, setSessionRepairCompleted] = useState(() =>
+    typeof window !== "undefined" && window.localStorage.getItem(SESSION_REPAIR_COMPLETED_STORAGE_KEY) === "1",
   );
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -1685,8 +1703,8 @@ export function App() {
     return result;
   };
 
-  const syncProvidersNow = async () => {
-    if (providerSyncProgress.active) return;
+  const syncProvidersNow = async (): Promise<CommandResult<ProviderSyncPayload> | null> => {
+    if (providerSyncProgress.active) return null;
     setProviderSyncProgress({
       active: true,
       percent: 12,
@@ -1742,7 +1760,8 @@ export function App() {
           message: providerSyncProgressMessage(finalResult),
           result: finalResult,
         });
-        if (targetProvider) {
+        const recoverySucceeded = isSuccessStatus(finalResult.status) && finalResult.syncStatus === "synced";
+        if (recoverySucceeded && targetProvider) {
           const next = {
             ...settingsForm,
             providerSyncLastSelectedProvider: targetProvider,
@@ -1752,8 +1771,14 @@ export function App() {
           };
           setSettingsForm(next);
         }
+        if (recoverySucceeded) {
+          window.localStorage.setItem(SESSION_REPAIR_COMPLETED_STORAGE_KEY, "1");
+          setSessionRepairCompleted(true);
+          await refreshLocalSessions(true);
+        }
         await refreshProviderSyncTargets(true);
         showNotice(t("历史会话修复"), finalResult.message, finalResult.status);
+        return finalResult;
       } else {
         setProviderSyncProgress({
           active: false,
@@ -1761,6 +1786,7 @@ export function App() {
           message: t("历史会话修复失败，请查看错误提示后重试。"),
           result: null,
         });
+        return null;
       }
     } finally {
       window.clearInterval(progressTimer);
@@ -2444,6 +2470,7 @@ export function App() {
               form={settingsForm}
               connectionVerified={connectionVerified}
               experienceMode={experienceMode}
+              sessionRepairCompleted={sessionRepairCompleted}
               actions={actions}
             />
           ) : null}
@@ -2604,7 +2631,7 @@ type Actions = {
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
-  syncProvidersNow: () => Promise<void>;
+  syncProvidersNow: () => Promise<CommandResult<ProviderSyncPayload> | null>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
@@ -2707,6 +2734,7 @@ function OverviewScreen({
   form,
   connectionVerified,
   experienceMode,
+  sessionRepairCompleted,
   actions,
 }: {
   overview: OverviewResult | null;
@@ -2714,6 +2742,7 @@ function OverviewScreen({
   form: BackendSettings;
   connectionVerified: boolean;
   experienceMode: ExperienceMode;
+  sessionRepairCompleted: boolean;
   actions: Actions;
 }) {
   const activeProvider = activeRelayProfile(normalizeSettings(form));
@@ -2723,7 +2752,8 @@ function OverviewScreen({
     : relayProfileSwitchValidation(activeProvider) === null;
   const shortcutInstalled = overview?.silent_shortcut.status === "installed";
   const launched = overview?.latest_launch?.status === "running" || overview?.latest_launch?.status === "running_degraded";
-  const setupComplete = codexDetected && providerReady && connectionVerified && shortcutInstalled && launched;
+  const repairReady = experienceMode !== "beginner" || sessionRepairCompleted;
+  const setupComplete = codexDetected && providerReady && connectionVerified && repairReady && shortcutInstalled && launched;
   const accountLabel = activeProvider.relayMode === "official"
     ? relay?.accountLabel || t("官方账号")
     : activeProvider.name || t("API 服务");
@@ -2751,6 +2781,13 @@ function OverviewScreen({
       actionLabel: providerReady ? t("开始测试") : t("先去配置"),
     },
     {
+      title: t("检测并恢复历史会话"),
+      detail: sessionRepairCompleted ? t("旧会话与侧边栏索引已检查") : t("恢复旧会话并合并重复来源"),
+      done: sessionRepairCompleted,
+      action: () => actions.syncProvidersNow(),
+      actionLabel: t("开始检测与恢复"),
+    },
+    {
       title: t("创建入口并启动"),
       detail: !shortcutInstalled
         ? t("创建桌面启动入口")
@@ -2770,7 +2807,7 @@ function OverviewScreen({
       <div className="deck-page overview-deck-page onboarding-page">
         <section className="onboarding-shell" aria-labelledby="setup-guide-heading">
           <header className="onboarding-heading">
-            <span className="onboarding-kicker">{tf("第 {0} 步，共 4 步", [nextStepIndex + 1])}</span>
+            <span className="onboarding-kicker">{tf("第 {0} 步，共 {1} 步", [nextStepIndex + 1, setupSteps.length])}</span>
             <h2 id="setup-guide-heading">{t("让 Codex 准备就绪")}</h2>
             <p>{t("完成当前步骤后，下一步会自动解锁。")}</p>
           </header>
@@ -2794,7 +2831,8 @@ function OverviewScreen({
                 {nextStepIndex === 0 ? <AppWindow className="h-6 w-6" /> : null}
                 {nextStepIndex === 1 ? <KeyRound className="h-6 w-6" /> : null}
                 {nextStepIndex === 2 ? <TestTube className="h-6 w-6" /> : null}
-                {nextStepIndex === 3 ? <Rocket className="h-6 w-6" /> : null}
+                {nextStepIndex === 3 ? <Wrench className="h-6 w-6" /> : null}
+                {nextStepIndex === 4 ? <Rocket className="h-6 w-6" /> : null}
               </span>
               <div>
                 <span>{t("现在完成")}</span>
@@ -4056,7 +4094,7 @@ function SessionsScreen({
               </Button>
               <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()}>
                 <Wrench className="h-4 w-4" />
-                {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
+                {providerSyncProgress.active ? t("正在检测与恢复…") : t("检测并恢复")}
               </Button>
             </div>
           </div>

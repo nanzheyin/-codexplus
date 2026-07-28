@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -15,6 +15,7 @@ const BACKUP_KEEP_COUNT: usize = 5;
 #[serde(rename_all = "snake_case")]
 pub enum ProviderSyncStatus {
     Disabled,
+    Partial,
     Skipped,
     Synced,
 }
@@ -29,8 +30,12 @@ pub struct ProviderSyncResult {
     pub skipped_locked_rollout_files: Vec<PathBuf>,
     pub sqlite_rows_updated: usize,
     pub sqlite_provider_rows_updated: usize,
+    pub sqlite_catalog_provider_rows_updated: usize,
+    pub sqlite_catalog_rows_inserted: usize,
+    pub sqlite_catalog_state_rows_updated: usize,
     pub sqlite_user_event_rows_updated: usize,
     pub sqlite_cwd_rows_updated: usize,
+    pub duplicate_thread_rows_merged: usize,
     pub updated_workspace_roots: usize,
     pub encrypted_content_warning: Option<String>,
 }
@@ -146,20 +151,57 @@ struct SessionIndexPlan {
     candidates: Vec<SessionIndexCleanupCandidate>,
 }
 
+#[derive(Debug, Clone)]
+struct CatalogRecoveryRecord {
+    thread_id: String,
+    display_title: String,
+    source_created_at: f64,
+    source_updated_at: f64,
+    cwd: String,
+    git_branch: Option<String>,
+    thread_source: Option<String>,
+    source_rank: u8,
+    metadata_updated_at: f64,
+}
+
+#[derive(Debug, Default)]
+struct CatalogRecoveryPlan {
+    records: HashMap<String, CatalogRecoveryRecord>,
+    duplicate_thread_rows_by_id: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionIndexMetadata {
+    title: String,
+    updated_at: Option<f64>,
+}
+
 #[derive(Debug, Default)]
 struct SqliteUpdateCounts {
     provider_rows: usize,
+    catalog_provider_rows: usize,
+    catalog_inserted_rows: usize,
+    catalog_state_rows: usize,
+    duplicate_thread_rows_merged: usize,
     user_event_rows: usize,
     cwd_rows: usize,
 }
 
 impl SqliteUpdateCounts {
     fn total(&self) -> usize {
-        self.provider_rows + self.user_event_rows + self.cwd_rows
+        self.provider_rows
+            + self.catalog_inserted_rows
+            + self.catalog_state_rows
+            + self.user_event_rows
+            + self.cwd_rows
     }
 
     fn add(&mut self, other: Self) {
         self.provider_rows += other.provider_rows;
+        self.catalog_provider_rows += other.catalog_provider_rows;
+        self.catalog_inserted_rows += other.catalog_inserted_rows;
+        self.catalog_state_rows += other.catalog_state_rows;
+        self.duplicate_thread_rows_merged += other.duplicate_thread_rows_merged;
         self.user_event_rows += other.user_event_rows;
         self.cwd_rows += other.cwd_rows;
     }
@@ -175,7 +217,7 @@ pub fn run_provider_sync_with_target(
 ) -> ProviderSyncResult {
     let home = codex_home
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| dirs_home().join(".codex"));
+        .unwrap_or_else(codex_plus_core::codex_sqlite::default_codex_home_dir);
     if !home.exists() {
         return result(
             ProviderSyncStatus::Skipped,
@@ -236,19 +278,32 @@ pub fn run_provider_sync_with_target(
             .filter(|(thread_id, _)| !projectless_thread_ids.contains(thread_id))
             .collect::<HashMap<_, _>>();
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-        let sqlite_update_count = count_sqlite_updates_for_paths(
+        let catalog_recovery =
+            build_catalog_recovery_plan(&home, &sqlite_paths, &collected.changes)?;
+        let sqlite_update_counts = count_sqlite_updates_for_paths(
             &sqlite_paths,
             &target_provider,
             &thread_ids_with_user_events,
             &cwd_by_thread_id,
+            &catalog_recovery,
         )?;
         let global_state_update_count =
             count_global_state_updates(&home.join(".codex-global-state.json"))?;
-        if rewrite_changes.is_empty() && sqlite_update_count == 0 && global_state_update_count == 0
+        if rewrite_changes.is_empty()
+            && sqlite_update_counts.total() == 0
+            && global_state_update_count == 0
         {
             let mut synced = result(
-                ProviderSyncStatus::Synced,
-                "Provider sync already up to date",
+                if collected.skipped_locked_rollout_files.is_empty() {
+                    ProviderSyncStatus::Synced
+                } else {
+                    ProviderSyncStatus::Partial
+                },
+                if collected.skipped_locked_rollout_files.is_empty() {
+                    "Session recovery already up to date"
+                } else {
+                    "Session recovery incomplete because some rollout files are in use"
+                },
                 &target_provider,
                 None,
                 0,
@@ -266,6 +321,7 @@ pub fn run_provider_sync_with_target(
                 &target_provider,
                 &thread_ids_with_user_events,
                 &cwd_by_thread_id,
+                &catalog_recovery,
             )?;
             let updated_workspace_roots =
                 apply_global_state_update(&home.join(".codex-global-state.json"))?;
@@ -281,7 +337,7 @@ pub fn run_provider_sync_with_target(
         };
         let mut synced = result(
             ProviderSyncStatus::Synced,
-            "Provider sync complete",
+            "Session recovery complete",
             &target_provider,
             Some(backup_dir),
             applied.changes.len(),
@@ -293,9 +349,18 @@ pub fn run_provider_sync_with_target(
             .extend(applied.skipped_locked_rollout_files);
         synced.skipped_locked_rollout_files.sort();
         synced.skipped_locked_rollout_files.dedup();
+        if !synced.skipped_locked_rollout_files.is_empty() {
+            synced.status = ProviderSyncStatus::Partial;
+            synced.message =
+                "Session recovery incomplete because some rollout files are in use".to_string();
+        }
         synced.sqlite_provider_rows_updated = sqlite_updates.provider_rows;
+        synced.sqlite_catalog_provider_rows_updated = sqlite_updates.catalog_provider_rows;
+        synced.sqlite_catalog_rows_inserted = sqlite_updates.catalog_inserted_rows;
+        synced.sqlite_catalog_state_rows_updated = sqlite_updates.catalog_state_rows;
         synced.sqlite_user_event_rows_updated = sqlite_updates.user_event_rows;
         synced.sqlite_cwd_rows_updated = sqlite_updates.cwd_rows;
+        synced.duplicate_thread_rows_merged = sqlite_updates.duplicate_thread_rows_merged;
         synced.updated_workspace_roots = updated_workspace_roots;
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
@@ -330,24 +395,21 @@ fn result(
         skipped_locked_rollout_files: Vec::new(),
         sqlite_rows_updated,
         sqlite_provider_rows_updated: 0,
+        sqlite_catalog_provider_rows_updated: 0,
+        sqlite_catalog_rows_inserted: 0,
+        sqlite_catalog_state_rows_updated: 0,
         sqlite_user_event_rows_updated: 0,
         sqlite_cwd_rows_updated: 0,
+        duplicate_thread_rows_merged: 0,
         updated_workspace_roots: 0,
         encrypted_content_warning: None,
     }
 }
 
-fn dirs_home() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
 pub fn load_provider_sync_targets(codex_home: Option<&Path>) -> ProviderSyncTargetList {
     let home = codex_home
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| dirs_home().join(".codex"));
+        .unwrap_or_else(codex_plus_core::codex_sqlite::default_codex_home_dir);
     let current_provider = read_current_provider(&home.join("config.toml"));
     let mut sources: HashMap<String, HashSet<ProviderSyncTargetSource>> = HashMap::new();
 
@@ -816,7 +878,7 @@ pub fn preview_session_index_cleanup(
 ) -> anyhow::Result<SessionIndexCleanupPreview> {
     let home = codex_home
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| dirs_home().join(".codex"));
+        .unwrap_or_else(codex_plus_core::codex_sqlite::default_codex_home_dir);
     let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)?;
     let plan = plan_session_index_cleanup(&home.join("session_index.jsonl"), &live_thread_ids)?;
@@ -843,7 +905,7 @@ pub fn apply_session_index_cleanup(
     }
     let home = codex_home
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| dirs_home().join(".codex"));
+        .unwrap_or_else(codex_plus_core::codex_sqlite::default_codex_home_dir);
     let lock_dir = home.join("tmp/provider-sync.lock");
     acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
     let result = (|| {
@@ -1290,6 +1352,304 @@ fn restore_file_mtime(path: &Path, mtime: Option<SystemTime>) {
     let _ = file.set_times(times);
 }
 
+fn build_catalog_recovery_plan(
+    home: &Path,
+    sqlite_paths: &[PathBuf],
+    session_changes: &[SessionChange],
+) -> anyhow::Result<CatalogRecoveryPlan> {
+    let mut plan = CatalogRecoveryPlan::default();
+    for change in session_changes {
+        let Some(thread_id) = change
+            .thread_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let source_updated_at = change
+            .original_mtime
+            .and_then(system_time_seconds)
+            .unwrap_or_else(now_seconds_f64);
+        merge_catalog_recovery_record(
+            &mut plan.records,
+            CatalogRecoveryRecord {
+                thread_id: thread_id.to_string(),
+                display_title: String::new(),
+                source_created_at: source_updated_at,
+                source_updated_at,
+                cwd: change.cwd.clone().unwrap_or_default(),
+                git_branch: None,
+                thread_source: None,
+                source_rank: 0,
+                metadata_updated_at: source_updated_at,
+            },
+        );
+    }
+
+    let session_index = load_session_index_metadata(&home.join("session_index.jsonl"))?;
+    for (thread_id, metadata) in session_index {
+        let Some(record) = plan.records.get_mut(&thread_id) else {
+            continue;
+        };
+        if record.display_title.trim().is_empty() && !metadata.title.trim().is_empty() {
+            record.display_title = metadata.title;
+        }
+        if let Some(updated_at) = metadata.updated_at {
+            record.source_updated_at = record.source_updated_at.max(updated_at);
+        }
+    }
+
+    let mut seen_thread_rows = HashSet::new();
+    for path in sqlite_paths {
+        load_thread_recovery_records(path, home, &mut plan, &mut seen_thread_rows)?;
+    }
+    Ok(plan)
+}
+
+fn load_session_index_metadata(
+    path: &Path,
+) -> anyhow::Result<HashMap<String, SessionIndexMetadata>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let text = fs::read_to_string(path)?;
+    let mut metadata = HashMap::new();
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(object) = record.as_object() else {
+            continue;
+        };
+        let Some(thread_id) = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let title = object
+            .get("thread_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let updated_at = object
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .and_then(parse_timestamp_seconds);
+        metadata.insert(
+            thread_id.to_string(),
+            SessionIndexMetadata { title, updated_at },
+        );
+    }
+    Ok(metadata)
+}
+
+fn load_thread_recovery_records(
+    path: &Path,
+    home: &Path,
+    plan: &mut CatalogRecoveryPlan,
+    seen_thread_rows: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let db = Connection::open(path)?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("id") {
+        return Ok(());
+    }
+    let expression = |column: &str, fallback: &str| {
+        if columns.contains(column) {
+            format!("\"{}\"", column.replace('"', "\"\""))
+        } else {
+            fallback.to_string()
+        }
+    };
+    let title = expression("title", "''");
+    let name = expression("name", "NULL");
+    let cwd = expression("cwd", "''");
+    let created_at = expression("created_at", "NULL");
+    let updated_at = expression("updated_at", "NULL");
+    let created_at_ms = expression("created_at_ms", "NULL");
+    let updated_at_ms = expression("updated_at_ms", "NULL");
+    let rollout_path = expression("rollout_path", "NULL");
+    let git_branch = expression("git_branch", "NULL");
+    let thread_source = expression("thread_source", "NULL");
+    let sql = format!(
+        "SELECT id, {title}, {name}, {cwd}, {created_at}, {updated_at}, \
+         {created_at_ms}, {updated_at_ms}, {rollout_path}, {git_branch}, {thread_source} \
+         FROM threads WHERE COALESCE(id, '') <> ''"
+    );
+    let mut statement = db.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            row.get::<_, Option<f64>>(4)?,
+            row.get::<_, Option<f64>>(5)?,
+            row.get::<_, Option<f64>>(6)?,
+            row.get::<_, Option<f64>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
+        ))
+    })?;
+    for row in rows {
+        let (
+            thread_id,
+            title,
+            name,
+            cwd,
+            created_at,
+            updated_at,
+            created_at_ms,
+            updated_at_ms,
+            rollout_path,
+            git_branch,
+            thread_source,
+        ) = row?;
+        let known_rollout = plan.records.contains_key(&thread_id);
+        if !known_rollout
+            && !rollout_path
+                .as_deref()
+                .is_some_and(|value| recovery_rollout_path_exists(home, value))
+        {
+            continue;
+        }
+        if !seen_thread_rows.insert(thread_id.clone()) {
+            *plan
+                .duplicate_thread_rows_by_id
+                .entry(thread_id.clone())
+                .or_default() += 1;
+        }
+        let fallback_time = rollout_path
+            .as_deref()
+            .and_then(|value| recovery_rollout_path(home, value))
+            .and_then(|path| fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_seconds)
+            .unwrap_or_else(now_seconds_f64);
+        let source_created_at =
+            timestamp_from_columns(created_at_ms, created_at).unwrap_or(fallback_time);
+        let source_updated_at = timestamp_from_columns(updated_at_ms, updated_at)
+            .unwrap_or(fallback_time)
+            .max(source_created_at);
+        merge_catalog_recovery_record(
+            &mut plan.records,
+            CatalogRecoveryRecord {
+                thread_id,
+                display_title: if name.trim().is_empty() { title } else { name },
+                source_created_at,
+                source_updated_at,
+                cwd,
+                git_branch: non_empty_string(git_branch),
+                thread_source: non_empty_string(thread_source),
+                source_rank: 1,
+                metadata_updated_at: source_updated_at,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn merge_catalog_recovery_record(
+    records: &mut HashMap<String, CatalogRecoveryRecord>,
+    candidate: CatalogRecoveryRecord,
+) {
+    let Some(existing) = records.get_mut(&candidate.thread_id) else {
+        records.insert(candidate.thread_id.clone(), candidate);
+        return;
+    };
+    existing.source_created_at =
+        positive_min(existing.source_created_at, candidate.source_created_at);
+    let candidate_is_newer = candidate.source_rank > existing.source_rank
+        || (candidate.source_rank == existing.source_rank
+            && candidate.metadata_updated_at >= existing.metadata_updated_at);
+    existing.source_updated_at = existing.source_updated_at.max(candidate.source_updated_at);
+    if (candidate_is_newer || existing.display_title.trim().is_empty())
+        && !candidate.display_title.trim().is_empty()
+    {
+        existing.display_title = candidate.display_title;
+    }
+    if (candidate_is_newer || existing.cwd.trim().is_empty()) && !candidate.cwd.trim().is_empty() {
+        existing.cwd = candidate.cwd;
+    }
+    if candidate_is_newer || existing.git_branch.is_none() {
+        if candidate.git_branch.is_some() {
+            existing.git_branch = candidate.git_branch;
+        }
+    }
+    if candidate_is_newer || existing.thread_source.is_none() {
+        if candidate.thread_source.is_some() {
+            existing.thread_source = candidate.thread_source;
+        }
+    }
+    if candidate_is_newer {
+        existing.source_rank = candidate.source_rank;
+        existing.metadata_updated_at = candidate.metadata_updated_at;
+    }
+}
+
+fn recovery_rollout_path_exists(home: &Path, raw: &str) -> bool {
+    recovery_rollout_path(home, raw).is_some_and(|path| path.is_file())
+}
+
+fn recovery_rollout_path(home: &Path, raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        home.join(path)
+    })
+}
+
+fn timestamp_from_columns(milliseconds: Option<f64>, seconds: Option<f64>) -> Option<f64> {
+    milliseconds
+        .filter(|value| *value > 0.0)
+        .map(|value| value / 1000.0)
+        .or_else(|| seconds.filter(|value| *value > 0.0))
+}
+
+fn parse_timestamp_seconds(value: &str) -> Option<f64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis() as f64 / 1000.0)
+}
+
+fn system_time_seconds(value: SystemTime) -> Option<f64> {
+    value
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64())
+}
+
+fn now_seconds_f64() -> f64 {
+    system_time_seconds(SystemTime::now()).unwrap_or_default()
+}
+
+fn positive_min(left: f64, right: f64) -> f64 {
+    match (left > 0.0, right > 0.0) {
+        (true, true) => left.min(right),
+        (true, false) => left,
+        (false, true) => right,
+        (false, false) => 0.0,
+    }
+}
+
+fn non_empty_string(value: Option<String>) -> Option<String> {
+    value.filter(|item| !item.trim().is_empty())
+}
+
 fn table_columns(db: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
     let mut stmt = db.prepare(&format!(
         "PRAGMA table_info(\"{}\")",
@@ -1305,21 +1665,256 @@ fn sqlite_provider_ids(path: &Path) -> anyhow::Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let db = Connection::open(path)?;
-    let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(Vec::new());
-    }
-    let mut stmt = db.prepare(
-        "SELECT DISTINCT COALESCE(model_provider, '') FROM threads WHERE COALESCE(model_provider, '') <> ''",
-    )?;
     let mut ids = HashSet::new();
-    for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
-        let id = item?;
-        if is_valid_provider_id_for_discovery(&id) {
-            ids.insert(id);
+    for table in ["threads", "local_thread_catalog"] {
+        let columns = table_columns(&db, table)?;
+        if !columns.contains("model_provider") {
+            continue;
+        }
+        let mut stmt = db.prepare(&format!(
+            "SELECT DISTINCT COALESCE(model_provider, '') FROM {table} \
+             WHERE COALESCE(model_provider, '') <> ''"
+        ))?;
+        for item in stmt.query_map([], |row| row.get::<_, String>(0))? {
+            let id = item?;
+            if is_valid_provider_id_for_discovery(&id) {
+                ids.insert(id);
+            }
         }
     }
     Ok(sorted_provider_ids(ids))
+}
+
+fn catalog_recovery_schema_supported(columns: &HashSet<String>) -> bool {
+    [
+        "host_id",
+        "thread_id",
+        "display_title",
+        "source_created_at",
+        "source_updated_at",
+        "cwd",
+        "source_kind",
+        "model_provider",
+        "observation_sequence",
+    ]
+    .iter()
+    .all(|column| columns.contains(*column))
+}
+
+fn catalog_host_kinds(db: &Connection) -> anyhow::Result<HashMap<String, String>> {
+    let columns = table_columns(db, "local_thread_catalog_hosts")?;
+    let mut hosts = HashMap::new();
+    if columns.contains("host_id") && columns.contains("host_kind") {
+        let mut statement = db.prepare(
+            "SELECT host_id, host_kind FROM local_thread_catalog_hosts \
+             WHERE COALESCE(host_id, '') <> ''",
+        )?;
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (host_id, host_kind) = row?;
+            hosts.insert(host_id, host_kind);
+        }
+    }
+    if !hosts.values().any(|kind| kind == "local") {
+        hosts.insert("local".to_string(), "local".to_string());
+    }
+    Ok(hosts)
+}
+
+fn catalog_recovery_assignments(
+    db: &Connection,
+    plan: &CatalogRecoveryPlan,
+) -> anyhow::Result<Vec<(String, CatalogRecoveryRecord)>> {
+    let columns = table_columns(db, "local_thread_catalog")?;
+    if !catalog_recovery_schema_supported(&columns) || plan.records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut existing_ids = HashSet::new();
+    let mut statement = db.prepare(
+        "SELECT DISTINCT thread_id FROM local_thread_catalog \
+         WHERE COALESCE(thread_id, '') <> ''",
+    )?;
+    for thread_id in statement.query_map([], |row| row.get::<_, String>(0))? {
+        existing_ids.insert(thread_id?);
+    }
+    let hosts = catalog_host_kinds(db)?;
+    let mut assignments = plan
+        .records
+        .values()
+        .filter(|record| !existing_ids.contains(&record.thread_id))
+        .map(|record| (catalog_host_for_record(&hosts, record), record.clone()))
+        .collect::<Vec<_>>();
+    assignments.sort_by(|left, right| left.1.thread_id.cmp(&right.1.thread_id));
+    Ok(assignments)
+}
+
+fn catalog_host_for_record(
+    hosts: &HashMap<String, String>,
+    record: &CatalogRecoveryRecord,
+) -> String {
+    let wsl_hosts = hosts
+        .iter()
+        .filter(|(_, kind)| kind.as_str() == "wsl")
+        .map(|(host_id, _)| host_id.as_str())
+        .collect::<Vec<_>>();
+    if cwd_looks_like_wsl(&record.cwd) && !wsl_hosts.is_empty() {
+        if let Some(distribution) = wsl_distribution_from_cwd(&record.cwd)
+            && let Some(host_id) = wsl_hosts
+                .iter()
+                .find(|host_id| host_id.to_ascii_lowercase().contains(&distribution))
+        {
+            return (*host_id).to_string();
+        }
+        if wsl_hosts.len() == 1 {
+            return wsl_hosts[0].to_string();
+        }
+    }
+    hosts
+        .iter()
+        .find(|(_, kind)| kind.as_str() == "local")
+        .map(|(host_id, _)| host_id.clone())
+        .unwrap_or_else(|| "local".to_string())
+}
+
+fn cwd_looks_like_wsl(cwd: &str) -> bool {
+    let normalized = cwd.trim().replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with('/')
+        || normalized.starts_with("//wsl$/")
+        || normalized.starts_with("//wsl.localhost/")
+}
+
+fn wsl_distribution_from_cwd(cwd: &str) -> Option<String> {
+    let normalized = cwd.trim().replace('\\', "/");
+    let components = normalized
+        .trim_start_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
+    if components.len() < 2
+        || !matches!(
+            components[0].to_ascii_lowercase().as_str(),
+            "wsl$" | "wsl.localhost"
+        )
+    {
+        return None;
+    }
+    Some(components[1].to_ascii_lowercase())
+}
+
+fn catalog_reconciliation_hosts(
+    db: &Connection,
+    assignments: &[(String, CatalogRecoveryRecord)],
+) -> anyhow::Result<HashSet<String>> {
+    let state_columns = table_columns(db, "local_thread_catalog_sync_state")?;
+    if ![
+        "host_id",
+        "watermark_updated_at",
+        "initial_build_complete",
+        "observation_sequence",
+    ]
+    .iter()
+    .all(|column| state_columns.contains(*column))
+    {
+        return Ok(HashSet::new());
+    }
+    let hosts = catalog_host_kinds(db)?;
+    let mut candidates = assignments
+        .iter()
+        .map(|(host_id, _)| host_id.clone())
+        .collect::<HashSet<_>>();
+    let catalog_columns = table_columns(db, "local_thread_catalog")?;
+    if catalog_columns.contains("host_id") {
+        let mut statement = db.prepare(
+            "SELECT DISTINCT host_id FROM local_thread_catalog \
+             WHERE COALESCE(host_id, '') <> ''",
+        )?;
+        for host_id in statement.query_map([], |row| row.get::<_, String>(0))? {
+            let host_id = host_id?;
+            if hosts
+                .get(&host_id)
+                .is_none_or(|kind| matches!(kind.as_str(), "local" | "wsl"))
+            {
+                candidates.insert(host_id);
+            }
+        }
+    }
+    let assigned_hosts = assignments
+        .iter()
+        .map(|(host_id, _)| host_id.as_str())
+        .collect::<HashSet<_>>();
+    candidates.retain(|host_id| {
+        assigned_hosts.contains(host_id.as_str())
+            || catalog_state_needs_reconciliation(db, host_id, &state_columns).unwrap_or(true)
+    });
+    Ok(candidates)
+}
+
+fn catalog_state_needs_reconciliation(
+    db: &Connection,
+    host_id: &str,
+    state_columns: &HashSet<String>,
+) -> anyhow::Result<bool> {
+    let (max_updated_at, max_sequence) = db.query_row(
+        "SELECT MAX(source_updated_at), MAX(observation_sequence) \
+         FROM local_thread_catalog WHERE host_id = ?1",
+        [host_id],
+        |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )?;
+    let Some(max_sequence) = max_sequence else {
+        return Ok(false);
+    };
+    let last_full = if state_columns.contains("last_full_reconciled_at") {
+        "last_full_reconciled_at"
+    } else {
+        "1"
+    };
+    let sql = format!(
+        "SELECT watermark_updated_at, initial_build_complete, observation_sequence, {last_full} \
+         FROM local_thread_catalog_sync_state WHERE host_id = ?1"
+    );
+    let state = db
+        .query_row(&sql, [host_id], |row| {
+            Ok((
+                row.get::<_, Option<f64>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .optional()?;
+    let Some((watermark, initial_complete, observation_sequence, last_full)) = state else {
+        return Ok(true);
+    };
+    Ok(initial_complete != 1
+        || observation_sequence < max_sequence
+        || watermark.unwrap_or_default() < max_updated_at.unwrap_or_default()
+        || last_full.is_none())
+}
+
+fn missing_catalog_host_rows(
+    db: &Connection,
+    assignments: &[(String, CatalogRecoveryRecord)],
+) -> anyhow::Result<usize> {
+    let columns = table_columns(db, "local_thread_catalog_hosts")?;
+    if !columns.contains("host_id") || !columns.contains("host_kind") {
+        return Ok(0);
+    }
+    let assigned_hosts = assignments
+        .iter()
+        .map(|(host_id, _)| host_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut missing = 0;
+    for host_id in assigned_hosts {
+        let exists: i64 = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM local_thread_catalog_hosts WHERE host_id = ?1)",
+            [host_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 && host_id == "local" {
+            missing += 1;
+        }
+    }
+    Ok(missing)
 }
 
 fn count_sqlite_updates(
@@ -1327,23 +1922,34 @@ fn count_sqlite_updates(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
-) -> anyhow::Result<usize> {
+    catalog_recovery: &CatalogRecoveryPlan,
+) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(SqliteUpdateCounts::default());
     }
     let db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(0);
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let mut counts = SqliteUpdateCounts::default();
+    if columns.contains("model_provider") {
+        counts.provider_rows += db.query_row(
+            "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
     }
-    let mut total: usize = db.query_row(
-        "SELECT COUNT(*) FROM threads WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
+    if catalog_columns.contains("model_provider") {
+        counts.catalog_provider_rows = db.query_row(
+            "SELECT COUNT(*) FROM local_thread_catalog \
+             WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        counts.provider_rows += counts.catalog_provider_rows;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
-            total += db.query_row(
+            counts.user_event_rows += db.query_row(
                 "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
                 [thread_id],
                 |row| row.get::<_, i64>(0),
@@ -1352,14 +1958,18 @@ fn count_sqlite_updates(
     }
     if columns.contains("cwd") {
         for (thread_id, cwd) in cwd_by_thread_id {
-            total += db.query_row(
+            counts.cwd_rows += db.query_row(
                 "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
                 (thread_id, cwd),
                 |row| row.get::<_, i64>(0),
             )? as usize;
         }
     }
-    Ok(total)
+    let assignments = catalog_recovery_assignments(&db, catalog_recovery)?;
+    counts.catalog_inserted_rows = assignments.len();
+    counts.catalog_state_rows = catalog_reconciliation_hosts(&db, &assignments)?.len()
+        + missing_catalog_host_rows(&db, &assignments)?;
+    Ok(counts)
 }
 
 fn count_sqlite_updates_for_paths(
@@ -1367,17 +1977,179 @@ fn count_sqlite_updates_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
-) -> anyhow::Result<usize> {
-    let mut total = 0;
+    catalog_recovery: &CatalogRecoveryPlan,
+) -> anyhow::Result<SqliteUpdateCounts> {
+    let mut total = SqliteUpdateCounts::default();
     for path in paths {
-        total += count_sqlite_updates(
+        total.add(count_sqlite_updates(
             path,
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
-        )?;
+            catalog_recovery,
+        )?);
     }
     Ok(total)
+}
+
+fn insert_catalog_recovery_record(
+    tx: &rusqlite::Transaction<'_>,
+    columns: &HashSet<String>,
+    host_id: &str,
+    record: &CatalogRecoveryRecord,
+    target_provider: &str,
+    observation_sequence: i64,
+) -> anyhow::Result<usize> {
+    let mut insert_columns = vec![
+        "host_id",
+        "thread_id",
+        "display_title",
+        "source_created_at",
+        "source_updated_at",
+        "cwd",
+        "source_kind",
+        "model_provider",
+        "observation_sequence",
+    ];
+    let created_at = if record.source_created_at > 0.0 {
+        record.source_created_at
+    } else {
+        now_seconds_f64()
+    };
+    let updated_at = record.source_updated_at.max(created_at);
+    let display_title = if record.display_title.trim().is_empty() {
+        "Recovered session"
+    } else {
+        record.display_title.trim()
+    };
+    let mut values = vec![
+        SqlValue::Text(host_id.to_string()),
+        SqlValue::Text(record.thread_id.clone()),
+        SqlValue::Text(display_title.to_string()),
+        SqlValue::Real(created_at),
+        SqlValue::Real(updated_at),
+        SqlValue::Text(record.cwd.clone()),
+        SqlValue::Text("vscode".to_string()),
+        SqlValue::Text(target_provider.to_string()),
+        SqlValue::Integer(observation_sequence),
+    ];
+    if columns.contains("source_detail") {
+        insert_columns.push("source_detail");
+        values.push(SqlValue::Null);
+    }
+    if columns.contains("git_branch") {
+        insert_columns.push("git_branch");
+        values.push(
+            record
+                .git_branch
+                .clone()
+                .map(SqlValue::Text)
+                .unwrap_or(SqlValue::Null),
+        );
+    }
+    if columns.contains("missing_candidate") {
+        insert_columns.push("missing_candidate");
+        values.push(SqlValue::Integer(0));
+    }
+    if columns.contains("thread_source") {
+        insert_columns.push("thread_source");
+        values.push(
+            record
+                .thread_source
+                .clone()
+                .map(SqlValue::Text)
+                .unwrap_or(SqlValue::Null),
+        );
+    }
+    let placeholders = (1..=values.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "INSERT OR IGNORE INTO local_thread_catalog ({}) VALUES ({placeholders})",
+        insert_columns.join(", ")
+    );
+    Ok(tx.execute(&sql, params_from_iter(values.iter()))?)
+}
+
+fn catalog_next_observation_sequence(db: &Connection, host_id: &str) -> anyhow::Result<i64> {
+    let catalog_max = db.query_row(
+        "SELECT COALESCE(MAX(observation_sequence), 0) FROM local_thread_catalog WHERE host_id = ?1",
+        [host_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let state_columns = table_columns(db, "local_thread_catalog_sync_state")?;
+    let state_max =
+        if state_columns.contains("host_id") && state_columns.contains("observation_sequence") {
+            db.query_row(
+                "SELECT COALESCE(MAX(observation_sequence), 0) \
+             FROM local_thread_catalog_sync_state WHERE host_id = ?1",
+                [host_id],
+                |row| row.get::<_, i64>(0),
+            )?
+        } else {
+            0
+        };
+    Ok(catalog_max.max(state_max))
+}
+
+fn reconcile_catalog_state(
+    tx: &rusqlite::Transaction<'_>,
+    host_id: &str,
+    state_columns: &HashSet<String>,
+) -> anyhow::Result<usize> {
+    if ![
+        "host_id",
+        "watermark_updated_at",
+        "initial_build_complete",
+        "observation_sequence",
+    ]
+    .iter()
+    .all(|column| state_columns.contains(*column))
+    {
+        return Ok(0);
+    }
+    let (watermark, observation_sequence) = tx.query_row(
+        "SELECT MAX(source_updated_at), MAX(observation_sequence) \
+         FROM local_thread_catalog WHERE host_id = ?1",
+        [host_id],
+        |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )?;
+    let (Some(watermark), Some(observation_sequence)) = (watermark, observation_sequence) else {
+        return Ok(0);
+    };
+    if state_columns.contains("last_full_reconciled_at") {
+        Ok(tx.execute(
+            "INSERT INTO local_thread_catalog_sync_state \
+             (host_id, watermark_updated_at, initial_build_complete, observation_sequence, last_full_reconciled_at) \
+             VALUES (?1, ?2, 1, ?3, ?4) \
+             ON CONFLICT(host_id) DO UPDATE SET \
+               watermark_updated_at = CASE \
+                 WHEN local_thread_catalog_sync_state.watermark_updated_at IS NULL \
+                   OR local_thread_catalog_sync_state.watermark_updated_at < excluded.watermark_updated_at \
+                 THEN excluded.watermark_updated_at \
+                 ELSE local_thread_catalog_sync_state.watermark_updated_at END, \
+               initial_build_complete = 1, \
+               observation_sequence = MAX(local_thread_catalog_sync_state.observation_sequence, excluded.observation_sequence), \
+               last_full_reconciled_at = excluded.last_full_reconciled_at",
+            (host_id, watermark, observation_sequence, now_secs() as i64),
+        )?)
+    } else {
+        Ok(tx.execute(
+            "INSERT INTO local_thread_catalog_sync_state \
+             (host_id, watermark_updated_at, initial_build_complete, observation_sequence) \
+             VALUES (?1, ?2, 1, ?3) \
+             ON CONFLICT(host_id) DO UPDATE SET \
+               watermark_updated_at = CASE \
+                 WHEN local_thread_catalog_sync_state.watermark_updated_at IS NULL \
+                   OR local_thread_catalog_sync_state.watermark_updated_at < excluded.watermark_updated_at \
+                 THEN excluded.watermark_updated_at \
+                 ELSE local_thread_catalog_sync_state.watermark_updated_at END, \
+               initial_build_complete = 1, \
+               observation_sequence = MAX(local_thread_catalog_sync_state.observation_sequence, excluded.observation_sequence)",
+            (host_id, watermark, observation_sequence),
+        )?)
+    }
 }
 
 fn apply_sqlite_update(
@@ -1385,21 +2157,43 @@ fn apply_sqlite_update(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    catalog_recovery: &CatalogRecoveryPlan,
 ) -> anyhow::Result<SqliteUpdateCounts> {
     if !path.exists() {
         return Ok(SqliteUpdateCounts::default());
     }
     let mut db = Connection::open(path)?;
     let columns = table_columns(&db, "threads")?;
-    if !columns.contains("model_provider") {
-        return Ok(SqliteUpdateCounts::default());
-    }
+    let catalog_columns = table_columns(&db, "local_thread_catalog")?;
+    let state_columns = table_columns(&db, "local_thread_catalog_sync_state")?;
+    let assignments = catalog_recovery_assignments(&db, catalog_recovery)?;
+    let reconciliation_hosts = catalog_reconciliation_hosts(&db, &assignments)?;
+    let host_columns = table_columns(&db, "local_thread_catalog_hosts")?;
+    let mut next_sequence = assignments
+        .iter()
+        .map(|(host_id, _)| {
+            Ok((
+                host_id.clone(),
+                catalog_next_observation_sequence(&db, host_id)?,
+            ))
+        })
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
     let tx = db.transaction()?;
     let mut counts = SqliteUpdateCounts::default();
-    counts.provider_rows = tx.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
-        [target_provider],
-    )?;
+    if columns.contains("model_provider") {
+        counts.provider_rows += tx.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+    }
+    if catalog_columns.contains("model_provider") {
+        counts.catalog_provider_rows = tx.execute(
+            "UPDATE local_thread_catalog SET model_provider = ?1 \
+             WHERE COALESCE(model_provider, '') <> ?1",
+            [target_provider],
+        )?;
+        counts.provider_rows += counts.catalog_provider_rows;
+    }
     if columns.contains("has_user_event") {
         for thread_id in user_event_thread_ids {
             counts.user_event_rows += tx.execute(
@@ -1416,6 +2210,50 @@ fn apply_sqlite_update(
             )?;
         }
     }
+    if host_columns.contains("host_id") && host_columns.contains("host_kind") {
+        for host_id in assignments
+            .iter()
+            .map(|(host_id, _)| host_id.as_str())
+            .collect::<HashSet<_>>()
+        {
+            let host_exists: i64 = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_thread_catalog_hosts WHERE host_id = ?1)",
+                [host_id],
+                |row| row.get(0),
+            )?;
+            if host_id == "local" && host_exists == 0 {
+                counts.catalog_state_rows += tx.execute(
+                    "INSERT OR IGNORE INTO local_thread_catalog_hosts (host_id, host_kind) \
+                     VALUES ('local', 'local')",
+                    [],
+                )?;
+            }
+        }
+    }
+    for (host_id, record) in &assignments {
+        let sequence = next_sequence.entry(host_id.clone()).or_default();
+        let candidate_sequence = sequence.saturating_add(1);
+        let inserted = insert_catalog_recovery_record(
+            &tx,
+            &catalog_columns,
+            host_id,
+            record,
+            target_provider,
+            candidate_sequence,
+        )?;
+        if inserted > 0 {
+            *sequence = candidate_sequence;
+            counts.catalog_inserted_rows += inserted;
+            counts.duplicate_thread_rows_merged += catalog_recovery
+                .duplicate_thread_rows_by_id
+                .get(&record.thread_id)
+                .copied()
+                .unwrap_or_default();
+        }
+    }
+    for host_id in reconciliation_hosts {
+        counts.catalog_state_rows += reconcile_catalog_state(&tx, &host_id, &state_columns)?;
+    }
     tx.commit()?;
     Ok(counts)
 }
@@ -1425,6 +2263,7 @@ fn apply_sqlite_update_for_paths(
     target_provider: &str,
     user_event_thread_ids: &HashSet<String>,
     cwd_by_thread_id: &HashMap<String, String>,
+    catalog_recovery: &CatalogRecoveryPlan,
 ) -> anyhow::Result<SqliteUpdateCounts> {
     let mut total = SqliteUpdateCounts::default();
     for path in paths {
@@ -1433,6 +2272,7 @@ fn apply_sqlite_update_for_paths(
             target_provider,
             user_event_thread_ids,
             cwd_by_thread_id,
+            catalog_recovery,
         )?);
     }
     Ok(total)

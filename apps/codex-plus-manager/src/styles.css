@@ -4857,8 +4857,14 @@ body {
   .session-table-row {
     grid-template-columns: 34px minmax(0, 1fr) minmax(70px, 0.55fr) 72px 92px 34px;
     gap: 6px;
+    min-width: 620px;
     padding-right: 8px;
     padding-left: 8px;
+  }
+
+  .session-table {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
   }
 
   .session-table-header {
