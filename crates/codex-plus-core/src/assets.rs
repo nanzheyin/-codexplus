@@ -243,4 +243,12 @@ mod tests {
 
         assert_eq!(config["fitMode"].as_str(), Some("fill"));
     }
+
+    #[test]
+    fn injected_surfaces_use_codex_deck_brand() {
+        assert!(renderer_script().contains("Codex Deck"));
+        assert!(!renderer_script().contains("Codex++"));
+        assert!(stepwise_script().contains("Codex Deck 管理工具"));
+        assert!(!stepwise_script().contains("Codex++"));
+    }
 }

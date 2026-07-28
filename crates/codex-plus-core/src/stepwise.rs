@@ -221,7 +221,7 @@ pub async fn test_connection(settings: &BackendSettings) -> anyhow::Result<Value
         StepwiseRequest {
             last_user_message: "测试 Stepwise 配置。".to_string(),
             last_assistant_message: "Stepwise 应返回 0 到 6 条可直接发送的后续建议。".to_string(),
-            thread_title: "Codex++ Stepwise test".to_string(),
+            thread_title: "Codex Deck Stepwise test".to_string(),
             page_url: String::new(),
         },
         settings,
