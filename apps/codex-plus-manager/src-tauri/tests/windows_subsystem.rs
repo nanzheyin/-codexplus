@@ -306,9 +306,8 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     let styles = std::fs::read_to_string(&styles).expect("read manager styles.css");
 
     assert!(app_tsx.contains("作为全局配置独立管理"));
-    assert!(
-        app_tsx.contains("label: t(\"工具与插件\")") || app_tsx.contains("label: \"工具与插件\"")
-    );
+    assert!(app_tsx.contains("id: \"tools\", label: t(\"工具\")"));
+    assert!(app_tsx.contains("moreSection !== \"context\""));
     assert!(
         app_tsx.contains("title={t(\"Codex 工具与插件\")}")
             || app_tsx.contains("title=\"Codex 工具与插件\"")
@@ -317,7 +316,7 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(!app_tsx.contains("label: \"上下文配置\""));
     assert!(!app_tsx.contains("title=\"上下文配置\""));
     assert!(!app_tsx.contains("<strong>Codex 上下文</strong>"));
-    assert!(app_tsx.contains("id: \"context\""));
+    assert!(app_tsx.contains("section: \"context\""));
     assert!(app_tsx.contains("function ContextScreen"));
     assert!(app_tsx.contains("moreSection === \"context\""));
     assert!(app_tsx.contains("next === \"more\" && nextMoreSection === \"context\""));
@@ -347,6 +346,35 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(styles.contains(".context-switch-thumb"));
     assert!(!styles.contains(".relay-context-row code"));
     assert!(styles.contains(".context-entry-delete"));
+}
+
+#[test]
+fn manager_beginner_flow_requires_a_real_connection_test() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
+    let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+
+    for label in ["首页", "账号与模型", "会话", "工具", "设置"] {
+        assert!(app_tsx.contains(&format!("label: t(\"{label}\")")));
+    }
+    for step in ["检测 Codex", "选择使用方式", "测试连接", "创建入口并启动"] {
+        assert!(app_tsx.contains(&format!("title: t(\"{step}\")")));
+    }
+    assert!(app_tsx.contains("VERIFIED_CONNECTION_STORAGE_KEY"));
+    assert!(app_tsx.contains("relayConnectionFingerprint(profile)"));
+    assert!(app_tsx.contains("result && isSuccessStatus(result.status)"));
+    assert!(app_tsx.contains("connectionVerified={connectionVerified}"));
+    assert!(app_tsx.contains("latest_launch?.status === \"running\""));
+    assert!(app_tsx.contains("latest_launch?.status === \"running_degraded\""));
+    assert!(app_tsx.contains("EXPERIENCE_MODE_STORAGE_KEY"));
+    assert!(app_tsx.contains("function ExperienceModeScreen"));
+    assert!(app_tsx.contains("onSelect(\"beginner\")"));
+    assert!(app_tsx.contains("onSelect(\"expert\")"));
+    assert!(app_tsx.contains("experienceMode === \"beginner\" && !setupComplete"));
+    assert!(app_tsx.contains("onExperienceModeChange(\"beginner\")"));
+    assert!(app_tsx.contains("onExperienceModeChange(\"expert\")"));
+    assert!(app_tsx.contains("window.localStorage.removeItem(EXPERIENCE_MODE_STORAGE_KEY)"));
+    assert!(app_tsx.contains("onExperienceModeReset={resetExperienceMode}"));
 }
 
 #[test]

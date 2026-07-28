@@ -53,7 +53,6 @@ import {
   FileCode2,
   Moon,
   Network,
-  PanelTopOpen,
   PowerOff,
   Plus,
   Play,
@@ -771,26 +770,33 @@ type StartupResult = CommandResult<{
 
 type Route = "overview" | "relay" | "sessions" | "more";
 type MoreSection = "context" | "enhance" | "maintenance" | "settings" | "about";
+type PrimaryNavId = "home" | "accounts" | "sessions" | "tools" | "settings";
+type ExperienceMode = "beginner" | "expert";
 type Theme = "dark" | "light";
 
-const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
-  { id: "overview", label: t("概览"), icon: LayoutDashboard },
-  { id: "relay", label: t("供应商"), icon: KeyRound },
-  { id: "sessions", label: t("会话"), icon: MessageCircle },
-  { id: "more", label: t("更多"), icon: Settings },
+const primaryNavItems: Array<{
+  id: PrimaryNavId;
+  label: string;
+  icon: LucideIcon;
+  route: Route;
+  section?: MoreSection;
+}> = [
+  { id: "home", label: t("首页"), icon: LayoutDashboard, route: "overview" },
+  { id: "accounts", label: t("账号与模型"), icon: KeyRound, route: "relay" },
+  { id: "sessions", label: t("会话"), icon: MessageCircle, route: "sessions" },
+  { id: "tools", label: t("工具"), icon: Network, route: "more", section: "context" },
+  { id: "settings", label: t("设置"), icon: Settings, route: "more", section: "settings" },
 ];
 
-const routeGroups: Array<{ label: string; items: Route[] }> = [
-  { label: t("工作台"), items: ["overview", "relay", "sessions", "more"] },
-];
-
-const moreSections: Array<DeckSectionOption<MoreSection>> = [
-  { id: "context", label: t("工具与插件"), detail: t("MCP、Skills 与 Plugins"), icon: Network },
+const settingsAreaSections: Array<DeckSectionOption<Exclude<MoreSection, "context">>> = [
   { id: "enhance", label: t("Codex 增强"), detail: t("对话、界面与兼容选项"), icon: Hammer },
   { id: "maintenance", label: t("维护"), detail: t("存储、入口与启动"), icon: Wrench },
-  { id: "settings", label: t("设置"), detail: t("主题与高级参数"), icon: Settings },
+  { id: "settings", label: t("偏好设置"), detail: t("主题与高级参数"), icon: Settings },
   { id: "about", label: t("关于与诊断"), detail: t("版本、日志和诊断报告"), icon: Info },
 ];
+
+const VERIFIED_CONNECTION_STORAGE_KEY = "codex-plus-verified-connection";
+const EXPERIENCE_MODE_STORAGE_KEY = "codex-plus-experience-mode";
 
 const defaultSettings: BackendSettings = {
   codexAppPath: "",
@@ -877,6 +883,10 @@ export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   const [moreSection, setMoreSection] = useState<MoreSection>(() => loadInitialMoreSection());
+  const [experienceMode, setExperienceMode] = useState<ExperienceMode | null>(() => loadInitialExperienceMode());
+  const [verifiedConnectionFingerprint, setVerifiedConnectionFingerprint] = useState(() =>
+    typeof window === "undefined" ? "" : window.localStorage.getItem(VERIFIED_CONNECTION_STORAGE_KEY) ?? "",
+  );
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -1882,6 +1892,15 @@ export function App() {
   const testRelayProfile = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileTestResult>("test_relay_profile", { profile }));
     if (result) showNotice(t("供应商测试"), result.message, result.status);
+    const fingerprint = relayConnectionFingerprint(profile);
+    if (result && isSuccessStatus(result.status)) {
+      window.localStorage.setItem(VERIFIED_CONNECTION_STORAGE_KEY, fingerprint);
+      setVerifiedConnectionFingerprint(fingerprint);
+    } else if (verifiedConnectionFingerprint === fingerprint) {
+      window.localStorage.removeItem(VERIFIED_CONNECTION_STORAGE_KEY);
+      setVerifiedConnectionFingerprint("");
+    }
+    return result ?? null;
   };
 
   const measureRelayLatency = async (url: string) => {
@@ -2295,9 +2314,32 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, moreSection, launchForm, settingsForm, settings, storageHealth, relayDetailDirty, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localRelay, localSessions, selectedProviderSyncTarget, envConflicts, ccsProviders],
+    [route, moreSection, launchForm, settingsForm, settings, storageHealth, relayDetailDirty, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localRelay, localSessions, selectedProviderSyncTarget, envConflicts, ccsProviders, verifiedConnectionFingerprint],
   );
   const hasUpdate = update?.updateAvailable === true;
+  const updateExperienceMode = (mode: ExperienceMode) => {
+    window.localStorage.setItem(EXPERIENCE_MODE_STORAGE_KEY, mode);
+    setExperienceMode(mode);
+  };
+  const resetExperienceMode = () => {
+    window.localStorage.removeItem(EXPERIENCE_MODE_STORAGE_KEY);
+    setExperienceMode(null);
+  };
+  const currentConnectionFingerprint = relayConnectionFingerprint(activeRelayProfile(normalizeSettings(settingsForm)));
+  const connectionVerified = verifiedConnectionFingerprint === currentConnectionFingerprint;
+  const activePrimaryNav: PrimaryNavId = route === "overview"
+    ? "home"
+    : route === "relay"
+      ? "accounts"
+      : route === "sessions"
+        ? "sessions"
+        : moreSection === "context"
+          ? "tools"
+          : "settings";
+
+  if (!experienceMode) {
+    return <ExperienceModeScreen onSelect={updateExperienceMode} />;
+  }
 
   return (
     <div className={`shell console-v2 ${theme}`}>
@@ -2328,32 +2370,27 @@ export function App() {
           </div>
         </div>
         <nav aria-label={t("主导航")} className="nav">
-          {routeGroups.map((group) => (
-            <div className="nav-group" key={group.label}>
-              <div className="nav-group-label">{group.label}</div>
-              {group.items.map((routeId) => {
-                const item = routes.find((candidate) => candidate.id === routeId);
-                if (!item) return null;
-                const Icon = item.icon;
-                return (
-                  <button
-                    aria-current={route === item.id ? "page" : undefined}
-                    className={`nav-item ${route === item.id ? "active" : ""}`}
-                    key={item.id}
-                    onClick={() => void navigate(item.id)}
-                    title={item.label}
-                    type="button"
-                  >
-                    <span className="nav-icon">
-                      <Icon className="h-4 w-4" aria-hidden="true" />
-                    </span>
-                    <span className="nav-label">{item.label}</span>
-                    {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+          <div className="nav-group">
+            {primaryNavItems.map((item) => {
+              const Icon = item.icon;
+              const active = activePrimaryNav === item.id;
+              return (
+                <button
+                  aria-current={active ? "page" : undefined}
+                  className={`nav-item ${active ? "active" : ""}`}
+                  key={item.id}
+                  onClick={() => void navigate(item.route, item.section)}
+                  title={item.label}
+                  type="button"
+                >
+                  <span className="nav-icon">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <span className="nav-label">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </nav>
         <div className="sidebar-status" title={overview?.current_version ?? t("等待状态检查")}>
           <span className={`sidebar-status-dot ${overview?.codex_version ? "online" : ""}`} aria-hidden="true" />
@@ -2388,10 +2425,6 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启 Codex")} variant="outline">
-              <Rocket className="h-4 w-4" />
-              {t("重启 Codex")}
-            </Button>
             <Button
               aria-label={t("刷新当前页面")}
               onClick={() => void actions.refreshCurrent()}
@@ -2407,10 +2440,10 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
-              storageHealth={storageHealth}
-              settings={settings}
+              relay={relay}
               form={settingsForm}
-              onFormChange={setSettingsForm}
+              connectionVerified={connectionVerified}
+              experienceMode={experienceMode}
               actions={actions}
             />
           ) : null}
@@ -2441,8 +2474,8 @@ export function App() {
           ) : null}
           {route === "more" ? (
             <div className="more-workspace">
-              <nav aria-label={t("更多功能")} className="deck-tabs more-tabs">
-                {moreSections.map((section) => {
+              {moreSection !== "context" ? <nav aria-label={t("设置分类")} className="deck-tabs more-tabs">
+                {settingsAreaSections.map((section) => {
                   const Icon = section.icon;
                   return (
                     <button
@@ -2457,7 +2490,7 @@ export function App() {
                     </button>
                   );
                 })}
-              </nav>
+              </nav> : null}
               {moreSection === "context" ? (
                 <ContextScreen
                   form={settingsForm}
@@ -2484,7 +2517,16 @@ export function App() {
                 />
               ) : null}
               {moreSection === "settings" ? (
-                <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+                <SettingsScreen
+                  settings={settings}
+                  theme={theme}
+                  experienceMode={experienceMode}
+                  form={settingsForm}
+                  onExperienceModeChange={updateExperienceMode}
+                  onExperienceModeReset={resetExperienceMode}
+                  onFormChange={setSettingsForm}
+                  actions={actions}
+                />
               ) : null}
               {moreSection === "about" ? (
                 <AboutScreen
@@ -2601,7 +2643,7 @@ type Actions = {
   ) => Promise<BackendSettings | null>;
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
-  testRelayProfile: (profile: RelayProfile) => Promise<void>;
+  testRelayProfile: (profile: RelayProfile) => Promise<RelayProfileTestResult | null>;
   measureRelayLatency: (url: string) => Promise<RelayLatencyResult | null>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
@@ -2629,265 +2671,177 @@ type Actions = {
   checkHealth: () => Promise<void>;
 };
 
-function OverviewScreen({
-  overview,
-  storageHealth,
-  settings,
-  form,
-  onFormChange,
-  actions,
-}: {
-  overview: OverviewResult | null;
-  storageHealth: StorageHealthResult | null;
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const health = healthItems(overview);
-  const shortcutsReady = overview?.silent_shortcut.status === "installed" ? 1 : 0;
-  const allHealthy = Boolean(overview?.codex_version) && health.every((item) => item.ok);
-  const issueCount = health.filter((item) => !item.ok).length + (overview?.codex_version ? 0 : 1);
-  const orderedHealth = [...health].sort((left, right) => Number(left.ok) - Number(right.ok));
-  const persistedLogsDbMaxMb = settings
-    ? normalizeLogsDbMaxMb(settings.settings.codexLogsDbMaxMb ?? 0)
-    : form.codexLogsDbMaxMb;
-  const logsDbLimitDirty = Boolean(settings) && form.codexLogsDbMaxMb !== persistedLogsDbMaxMb;
-  const currentLogsDbBytes = storageHealth?.codexLogsDb.bytes ?? overview?.logs_db_bytes ?? 0;
-  const currentLimitBytes = normalizeLogsDbMaxMb(form.codexLogsDbMaxMb) * 1024 * 1024;
-  const lastMaintenance = storageHealth?.lastLogsMaintenance ?? null;
-  const activeProvider = activeRelayProfile(normalizeSettings(form));
-  const providerReady = activeProvider.relayMode === "official"
-    ? Boolean(activeProvider.authContents.trim() || activeProvider.configContents.trim() || activeProvider.apiKey.trim())
-    : relayProfileSwitchValidation(activeProvider) === null;
-  const setupSteps = [
-    {
-      title: t("识别 Codex 应用"),
-      detail: overview?.codex_app.path || t("选择本机 Codex.exe、Codex.app 或应用目录"),
-      done: overview?.codex_app.status === "found",
-      action: () => actions.goRoute("more", "maintenance"),
-    },
-    {
-      title: t("配置供应商"),
-      detail: providerReady ? activeProvider.name : t("完成官方登录，或填写 API Base URL、Key 与模型"),
-      done: providerReady,
-      action: () => actions.goRoute("relay"),
-    },
-    {
-      title: t("安装并启动"),
-      detail: overview?.silent_shortcut.path || t("安装 Codex Deck 入口后启动 Codex"),
-      done: overview?.silent_shortcut.status === "installed",
-      action: () => actions.goRoute("more", "maintenance"),
-    },
-  ];
-  const setupIncomplete = setupSteps.some((step) => !step.done);
+function ExperienceModeScreen({ onSelect }: { onSelect: (mode: ExperienceMode) => void }) {
   return (
-    <div className="deck-page overview-deck-page">
-      <section className={`overview-status-band ${allHealthy ? "ready" : "attention"}`} aria-labelledby="system-status-heading">
-        <div className="overview-status-copy">
-          <span className="overview-status-icon" aria-hidden="true">
-            {allHealthy ? <ShieldCheck className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
-          </span>
-          <div>
-            <h2 id="system-status-heading">{t("系统状态")}</h2>
-            <p>{allHealthy ? t("全部关键状态正常") : tf("发现 {0} 个需要处理的状态", [issueCount])}</p>
-          </div>
+    <main className="experience-gate">
+      <section className="experience-gate-content" aria-labelledby="experience-heading">
+        <div className="experience-brand" aria-hidden="true">
+          <img alt="" src={codexDeckLogo} />
         </div>
-        <div className="overview-status-actions">
-          <Button onClick={() => void actions.checkHealth()} variant="outline">
-            <RefreshCw className="h-4 w-4" />
-            {t("重新检查")}
-          </Button>
-          <Button onClick={() => void actions.launch()}>
-            <Rocket className="h-4 w-4" />
-            {t("启动 Codex")}
-          </Button>
+        <div className="experience-heading">
+          <span>Codex Deck</span>
+          <h1 id="experience-heading">{t("选择你的使用方式")}</h1>
         </div>
-      </section>
-
-      {setupIncomplete ? (
-        <section className="overview-setup-guide" aria-labelledby="setup-guide-heading">
-          <div className="overview-section-head">
-            <div>
-              <h2 id="setup-guide-heading">{t("完成首次配置")}</h2>
-              <p>{t("按顺序完成三步，即可稳定启动和切换 Codex")}</p>
-            </div>
-            <Badge status="missing" />
-          </div>
-          <div className="setup-step-list">
-            {setupSteps.map((step, index) => (
-              <button className={step.done ? "done" : ""} key={step.title} onClick={() => void step.action()} type="button">
-                <span>{step.done ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>
-                <div><strong>{step.title}</strong><small>{step.detail}</small></div>
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="overview-summary" aria-label={t("运行状态概览")}>
-        <div className="overview-section-head">
-          <div>
-            <h2>{t("运行概览")}</h2>
-            <p>{t("版本、应用、入口和最近启动状态")}</p>
-          </div>
-          <Badge status={allHealthy ? "ok" : overview ? "missing" : "not_checked"} />
-        </div>
-        <div className="dashboard-metrics">
-          <DashboardMetric
-            icon={Gauge}
-            label={t("Codex 版本")}
-            status={overview?.codex_version ? "ok" : "not_checked"}
-            value={overview?.codex_version ?? t("未检测到")}
-          />
-          <DashboardMetric
-            icon={AppWindow}
-            label={t("Codex 应用")}
-            status={overview?.codex_app.status ?? "not_checked"}
-            tone="green"
-            value={statusLabel(overview?.codex_app.status ?? "not_checked")}
-          />
-          <DashboardMetric
-            icon={PanelTopOpen}
-            label={t("快捷入口")}
-            status={shortcutsReady === 1 ? "installed" : overview ? "missing" : "not_checked"}
-            value={`${shortcutsReady} / 1`}
-          />
-          <DashboardMetric
-            icon={Rocket}
-            label={t("最近启动")}
-            status={overview?.latest_launch?.status ?? "not_checked"}
-            tone="amber"
-            value={overview?.latest_launch?.status ? statusLabel(overview.latest_launch.status) : t("暂无记录")}
-          />
-        </div>
-        <div className="feature-action-row overview-log-limit-row">
-          <div>
-            <strong>{t("Codex 日志数据库上限")}</strong>
-            <small>{t("0 表示关闭；超限时会在 Codex 退出后删除最旧日志并压缩数据库，不阻塞下次启动，也不影响会话、消息和 rollout。")}</small>
-            <small>{tf("已检索：{0}；当前上限：{1}", [formatBytes(currentLogsDbBytes), currentLimitBytes ? formatBytes(currentLimitBytes) : t("未启用")])}</small>
-            <small>{lastMaintenance ? logsMaintenanceSummary(lastMaintenance) : t("尚未执行日志数据库维护。")}</small>
-          </div>
-          <Badge status={settings ? (logsDbLimitDirty ? "missing" : "ok") : "not_checked"} />
-          <Input
-            aria-label={t("Codex 日志数据库上限")}
-            className="logs-db-limit-input"
-            disabled={!settings}
-            max={16384}
-            min={0}
-            step={64}
-            type="number"
-            value={form.codexLogsDbMaxMb}
-            onChange={(event) => onFormChange({
-              ...form,
-              codexLogsDbMaxMb: clampNumber(Number(event.currentTarget.value), 0, 16384),
-            })}
-            onBlur={(event) => onFormChange({
-              ...form,
-              codexLogsDbMaxMb: normalizeLogsDbMaxMb(Number(event.currentTarget.value)),
-            })}
-          />
-          <span className="feature-action-status">MB</span>
-          <Button
-            disabled={!logsDbLimitDirty}
-            onClick={() => void actions.saveSettingsValue(form, false)}
-            variant="secondary"
-          >
-            <Save className="h-4 w-4" />
-            {t("保存设置")}
-          </Button>
-          <Button
-            disabled={logsDbLimitDirty || persistedLogsDbMaxMb <= 0}
-            onClick={() => void actions.maintainLogsDbNow()}
-            variant="outline"
-          >
-            <Database className="h-4 w-4" />
-            {t("立即维护")}
-          </Button>
+        <div className="experience-options">
+          <button onClick={() => onSelect("beginner")} type="button">
+            <span className="experience-option-icon"><Rocket className="h-5 w-5" /></span>
+            <strong>{t("我是新手")}</strong>
+            <small>{t("带我完成首次配置")}</small>
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <button onClick={() => onSelect("expert")} type="button">
+            <span className="experience-option-icon"><Settings className="h-5 w-5" /></span>
+            <strong>{t("我会配置")}</strong>
+            <small>{t("直接进入主界面")}</small>
+            <ChevronRight className="h-4 w-4" />
+          </button>
         </div>
       </section>
-
-      <div className="overview-main-grid">
-        <Panel className="overview-health-panel">
-          <CardHead title={t("需要关注")} detail={issueCount ? tf("{0} 个状态等待处理", [issueCount]) : t("当前没有阻塞项")} />
-          <CardContent>
-            <div className="health-grid">
-              {orderedHealth.map((item) => (
-                <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                  {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>{item.detail}</span>
-                  </div>
-                  <Badge status={item.status} />
-                </div>
-              ))}
-            </div>
-            <Toolbar>
-              <Button onClick={() => void actions.checkHealth()} variant="outline">
-                <RefreshCw className="h-4 w-4" />
-                {t("重新检查")}
-              </Button>
-            </Toolbar>
-          </CardContent>
-        </Panel>
-        <Panel className="overview-launch-panel">
-          <CardHead title={t("最近启动")} detail={overview?.latest_launch ? formatTime(overview.latest_launch.started_at_ms) : t("暂无启动状态")} />
-          <CardContent>
-            <LatestLaunch status={overview?.latest_launch ?? null} />
-            <Toolbar>
-              <Button variant="outline" onClick={() => void actions.goLogs()}>
-                {t("查看日志与诊断")}
-              </Button>
-            </Toolbar>
-          </CardContent>
-        </Panel>
-      </div>
-
-      <div className="overview-command-bar">
-        <div>
-          {allHealthy ? <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> : <ShieldAlert className="h-4 w-4" aria-hidden="true" />}
-          <span>{allHealthy ? t("Codex Deck 已准备就绪") : t("建议先处理异常状态再启动 Codex")}</span>
-        </div>
-        <Toolbar>
-          <Button variant="outline" onClick={() => void actions.repairShortcuts()}>
-            <Wrench className="h-4 w-4" />
-            {t("修复入口")}
-          </Button>
-          <Button variant="secondary" onClick={() => void actions.goLogs()}>
-            <FileCode2 className="h-4 w-4" />
-            {t("日志与诊断")}
-          </Button>
-        </Toolbar>
-      </div>
-    </div>
+    </main>
   );
 }
 
-function DashboardMetric({
-  icon: Icon,
-  label,
-  status,
-  tone = "blue",
-  value,
+function OverviewScreen({
+  overview,
+  relay,
+  form,
+  connectionVerified,
+  experienceMode,
+  actions,
 }: {
-  icon: LucideIcon;
-  label: string;
-  status: string;
-  tone?: "blue" | "green" | "amber";
-  value: string;
+  overview: OverviewResult | null;
+  relay: RelayResult | null;
+  form: BackendSettings;
+  connectionVerified: boolean;
+  experienceMode: ExperienceMode;
+  actions: Actions;
 }) {
-  return (
-    <div className="dashboard-metric">
-      <span className={`dashboard-metric-icon ${tone}`}>
-        <Icon className="h-4 w-4" aria-hidden="true" />
-      </span>
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
+  const activeProvider = activeRelayProfile(normalizeSettings(form));
+  const codexDetected = overview?.codex_app.status === "found";
+  const providerReady = activeProvider.relayMode === "official"
+    ? relay?.authenticated === true
+    : relayProfileSwitchValidation(activeProvider) === null;
+  const shortcutInstalled = overview?.silent_shortcut.status === "installed";
+  const launched = overview?.latest_launch?.status === "running" || overview?.latest_launch?.status === "running_degraded";
+  const setupComplete = codexDetected && providerReady && connectionVerified && shortcutInstalled && launched;
+  const accountLabel = activeProvider.relayMode === "official"
+    ? relay?.accountLabel || t("官方账号")
+    : activeProvider.name || t("API 服务");
+  const modelLabel = activeProvider.model || activeProvider.testModel || form.relayTestModel || t("默认模型");
+  const setupSteps = [
+    {
+      title: t("检测 Codex"),
+      detail: codexDetected ? overview?.codex_app.path || t("已找到 Codex") : t("确认这台电脑已安装 Codex"),
+      done: codexDetected,
+      action: () => actions.goRoute("more", "maintenance"),
+      actionLabel: t("去检测"),
+    },
+    {
+      title: t("选择使用方式"),
+      detail: providerReady ? accountLabel : t("使用官方账号，或添加一个 API 服务"),
+      done: providerReady,
+      action: () => actions.goRoute("relay"),
+      actionLabel: t("选择账号或 API"),
+    },
+    {
+      title: t("测试连接"),
+      detail: connectionVerified ? t("真实请求已成功") : providerReady ? t("发送一次真实请求，确认账号和模型可用") : t("请先完成使用方式配置"),
+      done: connectionVerified,
+      action: () => providerReady ? actions.testRelayProfile(activeProvider) : actions.goRoute("relay"),
+      actionLabel: providerReady ? t("开始测试") : t("先去配置"),
+    },
+    {
+      title: t("创建入口并启动"),
+      detail: !shortcutInstalled
+        ? t("创建桌面启动入口")
+        : launched
+          ? t("Codex 已成功启动")
+          : t("入口已创建，可以启动了"),
+      done: shortcutInstalled && launched,
+      action: () => shortcutInstalled ? actions.launch() : actions.installEntrypoints(),
+      actionLabel: shortcutInstalled ? t("启动 Codex") : t("创建启动入口"),
+    },
+  ];
+  const nextStepIndex = setupSteps.findIndex((step) => !step.done);
+  const nextStep = setupSteps[Math.max(0, nextStepIndex)];
+
+  if (experienceMode === "beginner" && !setupComplete) {
+    return (
+      <div className="deck-page overview-deck-page onboarding-page">
+        <section className="onboarding-shell" aria-labelledby="setup-guide-heading">
+          <header className="onboarding-heading">
+            <span className="onboarding-kicker">{tf("第 {0} 步，共 4 步", [nextStepIndex + 1])}</span>
+            <h2 id="setup-guide-heading">{t("让 Codex 准备就绪")}</h2>
+            <p>{t("完成当前步骤后，下一步会自动解锁。")}</p>
+          </header>
+          <div className="onboarding-layout">
+            <ol className="setup-step-list">
+              {setupSteps.map((step, index) => {
+                const active = index === nextStepIndex;
+                return (
+                  <li className={`${step.done ? "done" : ""} ${active ? "active" : ""}`} key={step.title}>
+                    <span className="setup-step-index">{step.done ? <CheckCircle2 className="h-4 w-4" /> : index + 1}</span>
+                    <div>
+                      <strong>{step.title}</strong>
+                      <small>{step.detail}</small>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="onboarding-action-panel">
+              <span className="onboarding-action-icon" aria-hidden="true">
+                {nextStepIndex === 0 ? <AppWindow className="h-6 w-6" /> : null}
+                {nextStepIndex === 1 ? <KeyRound className="h-6 w-6" /> : null}
+                {nextStepIndex === 2 ? <TestTube className="h-6 w-6" /> : null}
+                {nextStepIndex === 3 ? <Rocket className="h-6 w-6" /> : null}
+              </span>
+              <div>
+                <span>{t("现在完成")}</span>
+                <h3>{nextStep.title}</h3>
+                <p>{nextStep.detail}</p>
+              </div>
+              <Button className="onboarding-primary-action" onClick={() => void nextStep.action()}>
+                {nextStep.actionLabel}
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </section>
       </div>
-      <Badge status={status} />
+    );
+  }
+
+  return (
+    <div className="deck-page overview-deck-page">
+      <section className="daily-launch" aria-labelledby="daily-launch-heading">
+        <div className="daily-launch-main">
+          <span className={`daily-ready-mark ${setupComplete ? "" : "attention"}`}>
+            {setupComplete ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
+          </span>
+          <div>
+            <span>{setupComplete ? t("已准备就绪") : t("配置未完成")}</span>
+            <h2 id="daily-launch-heading">{t("启动 Codex")}</h2>
+            <p>{overview?.latest_launch ? tf("上次启动：{0}", [formatTime(overview.latest_launch.started_at_ms)]) : t("尚无启动记录")}</p>
+          </div>
+        </div>
+        <Button className="daily-launch-button" onClick={() => void actions.launch()}>
+          <Rocket className="h-5 w-5" />
+          {t("启动 Codex")}
+        </Button>
+      </section>
+      <section className="daily-account" aria-label={t("当前使用配置")}>
+        <div><span>{t("当前账号")}</span><strong>{accountLabel}</strong></div>
+        <div><span>{t("当前模型")}</span><strong>{modelLabel}</strong></div>
+        <div>
+          <span>{t("连接状态")}</span>
+          <strong className={connectionVerified ? "connection-ok" : "connection-pending"}>
+            {connectionVerified ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+            {connectionVerified ? t("已验证") : t("未验证")}
+          </strong>
+        </div>
+        <Button onClick={() => void actions.goRoute("relay")} variant="outline">{t("更换账号或模型")}</Button>
+      </section>
     </div>
   );
 }
@@ -3003,9 +2957,9 @@ function RelayScreen({
   const workspaceTabs = (
     <nav aria-label={t("Codex 本地管理")} className="deck-tabs relay-workspace-tabs" role="tablist">
       {([
-        ["providers", t("供应商"), KeyRound],
-        ["localRelay", t("本地中转"), Workflow],
-        ["localFiles", t("本机文件"), FileCode2],
+        ["providers", t("账号与模型"), KeyRound],
+        ["localRelay", t("高级：本地中转"), Workflow],
+        ["localFiles", t("高级：本机文件"), FileCode2],
       ] as Array<[RelayWorkspaceSection, string, LucideIcon]>).map(([id, label, Icon]) => (
         <button
           aria-selected={activeSection === id}
@@ -3059,7 +3013,7 @@ function RelayScreen({
       <Panel className="relay-control-panel">
         <CardContent className="relay-control-content">
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
-          <div className="relay-cockpit-toolbar">
+          <div className="relay-cockpit-toolbar relay-simple-toolbar">
             <label className="relay-search-field">
               <Search className="h-4 w-4" aria-hidden="true" />
               <span className="sr-only">{t("搜索供应商")}</span>
@@ -3070,6 +3024,40 @@ function RelayScreen({
                 value={relaySearch}
               />
             </label>
+            <div className="third-party-import relay-add-provider">
+              <Button onClick={() => setAddProviderOpen((open) => !open)}>
+                <Plus className="h-4 w-4" />
+                {t("添加账号或 API")}
+              </Button>
+              {addProviderOpen ? (
+                <div className="third-party-import-menu provider-kind-menu">
+                  <button
+                    onClick={() => {
+                      setAddProviderOpen(false);
+                      setNewProfileDraft(createRelayProfile(normalized));
+                      setDetailProfileId(null);
+                    }}
+                    type="button"
+                  >
+                    <strong>{t("API 服务")}</strong>
+                    <span>{t("填写 API 地址、密钥和模型")}</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddProviderOpen(false);
+                      setOAuthDialogOpen(true);
+                    }}
+                    type="button"
+                  >
+                    <strong>{t("官方账号")}</strong>
+                    <span>{t("从本机导入或浏览器登录")}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            <details className="relay-advanced-controls">
+              <summary><Settings className="h-4 w-4" />{t("高级管理")}</summary>
+              <div className="relay-advanced-content">
             <div className="relay-view-toggle" aria-label={t("切换视图")} role="group">
               <Button
                 aria-label={t("列表视图")}
@@ -3189,14 +3177,15 @@ function RelayScreen({
                 ) : null}
               </div>
             </div>
+              </div>
+            </details>
           </div>
-          <p className="relay-master-note">{t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}</p>
         </CardContent>
       </Panel>
       <section className="relay-provider-section">
         <div className="relay-list-heading">
             <div>
-              <strong>{t("供应商")}</strong>
+              <strong>{t("已添加的账号与 API")}</strong>
               <span>{tf("{0} 个配置", [relayProfilesForDisplay.length])}</span>
             </div>
             <span className={`relay-switch-status ${normalized.relayProfilesEnabled ? "enabled" : "disabled"}`}>
@@ -4226,7 +4215,7 @@ function SessionsScreen({
               </label>
             </div>
             <nav aria-label={t("会话分页")} className="session-page-controls">
-              <Button aria-label={t("首页")} disabled={currentPage === 1} onClick={() => setSessionPage(1)} size="icon" title={t("首页")} variant="ghost">
+              <Button aria-label={t("第一页")} disabled={currentPage === 1} onClick={() => setSessionPage(1)} size="icon" title={t("第一页")} variant="ghost">
                 <ChevronsLeft className="h-4 w-4" />
               </Button>
               <Button aria-label={t("上一页")} disabled={currentPage === 1} onClick={() => setSessionPage((page) => Math.max(1, page - 1))} size="icon" title={t("上一页")} variant="ghost">
@@ -4874,13 +4863,19 @@ type SettingsSection = "general" | "advanced";
 function SettingsScreen({
   settings,
   theme,
+  experienceMode,
   form,
+  onExperienceModeChange,
+  onExperienceModeReset,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   theme: Theme;
+  experienceMode: ExperienceMode;
   form: BackendSettings;
+  onExperienceModeChange: (mode: ExperienceMode) => void;
+  onExperienceModeReset: () => void;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -4912,6 +4907,31 @@ function SettingsScreen({
                 <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
               </div>
               <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+            </div>
+            <div className="theme-row">
+              <div>
+                <strong>{t("使用模式")}</strong>
+                <span>{experienceMode === "beginner" ? t("新手模式") : t("老手模式")}</span>
+              </div>
+              <div className="experience-mode-actions">
+                <div className="experience-mode-toggle" aria-label={t("使用模式")} role="group">
+                  <button
+                    className={experienceMode === "beginner" ? "active" : ""}
+                    onClick={() => onExperienceModeChange("beginner")}
+                    type="button"
+                  >
+                    {t("新手模式")}
+                  </button>
+                  <button
+                    className={experienceMode === "expert" ? "active" : ""}
+                    onClick={() => onExperienceModeChange("expert")}
+                    type="button"
+                  >
+                    {t("老手模式")}
+                  </button>
+                </div>
+                <Button onClick={onExperienceModeReset} variant="outline">{t("重新选择")}</Button>
+              </div>
             </div>
             <label className="theme-row settings-test-model-row">
               <strong>{t("供应商测试模型")}</strong>
@@ -6660,7 +6680,7 @@ function RelayContextManager({
               </label>
             </div>
             <nav aria-label={t("工具分页")} className="context-page-controls">
-              <Button aria-label={t("首页")} disabled={currentPage === 1} onClick={() => setContextPage(1)} size="icon" title={t("首页")} variant="ghost"><ChevronsLeft className="h-4 w-4" /></Button>
+              <Button aria-label={t("第一页")} disabled={currentPage === 1} onClick={() => setContextPage(1)} size="icon" title={t("第一页")} variant="ghost"><ChevronsLeft className="h-4 w-4" /></Button>
               <Button aria-label={t("上一页")} disabled={currentPage === 1} onClick={() => setContextPage((page) => Math.max(1, page - 1))} size="icon" title={t("上一页")} variant="ghost"><ChevronLeft className="h-4 w-4" /></Button>
               <div className="context-page-numbers">
                 {paginationItems.map((item) => typeof item === "number" ? (
@@ -7439,18 +7459,18 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function routeTitle(route: Route, moreSection: MoreSection) {
-  if (route === "more") {
-    return moreSections.find((section) => section.id === moreSection)?.label ?? t("更多");
-  }
-  return routes.find((item) => item.id === route)?.label ?? t("概览");
+  if (route === "overview") return t("首页");
+  if (route === "relay") return t("账号与模型");
+  if (route === "sessions") return t("会话");
+  return moreSection === "context" ? t("工具") : t("设置");
 }
 
 function routeSubtitle(route: Route, moreSection: MoreSection) {
   const subtitles: Record<Route, string> = {
-    overview: t("检查问题、启动与快速修复"),
-    relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    overview: t("查看当前账号并启动 Codex"),
+    relay: t("选择登录方式、账号和使用模型"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    more: moreSections.find((section) => section.id === moreSection)?.detail ?? t("工具、增强、维护、设置与诊断"),
+    more: moreSection === "context" ? t("管理 MCP、Skills 与 Plugins") : t("按需调整 Codex Deck"),
   };
   return subtitles[route];
 }
@@ -9250,6 +9270,22 @@ function formatDuration(startedAtMs: number): string {
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function relayConnectionFingerprint(profile: RelayProfile): string {
+  return JSON.stringify({
+    id: profile.id,
+    mode: profile.relayMode,
+    protocol: profile.protocol,
+    baseUrl: (profile.upstreamBaseUrl || profile.baseUrl).trim().replace(/\/+$/, "").toLocaleLowerCase(),
+    model: (profile.testModel || profile.model).trim(),
+  });
+}
+
+function loadInitialExperienceMode(): ExperienceMode | null {
+  if (typeof window === "undefined") return null;
+  const stored = window.localStorage.getItem(EXPERIENCE_MODE_STORAGE_KEY);
+  return stored === "beginner" || stored === "expert" ? stored : null;
 }
 
 function loadInitialTheme(): Theme {
