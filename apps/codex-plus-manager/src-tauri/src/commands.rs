@@ -2866,6 +2866,39 @@ pub async fn measure_relay_latency(url: String) -> CommandResult<RelayLatencyPay
 }
 
 #[tauri::command]
+pub async fn measure_relay_profile_latency(
+    profile: RelayProfile,
+) -> CommandResult<RelayLatencyPayload> {
+    let target_url = codex_plus_core::relay_config::relay_profile_base_url(&profile);
+    if target_url.trim().is_empty() {
+        return failed(
+            "供应商没有可检测的服务地址。",
+            RelayLatencyPayload {
+                latency_ms: None,
+                http_status: None,
+            },
+        );
+    }
+
+    match codex_plus_core::relay_latency::measure_relay_latency(&target_url).await {
+        Ok(measurement) => ok(
+            "供应商服务可达延迟检测完成。",
+            RelayLatencyPayload {
+                latency_ms: Some(measurement.latency_ms),
+                http_status: Some(measurement.http_status),
+            },
+        ),
+        Err(error) => failed(
+            &format!("供应商服务可达延迟检测失败：{error}"),
+            RelayLatencyPayload {
+                latency_ms: None,
+                http_status: None,
+            },
+        ),
+    }
+}
+
+#[tauri::command]
 pub async fn test_stepwise_settings(
     settings: BackendSettings,
 ) -> CommandResult<StepwiseTestPayload> {
@@ -5318,6 +5351,45 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.http_status, Some(200));
         assert!(result.payload.latency_ms.is_some());
+    }
+
+    #[test]
+    fn measure_relay_profile_latency_uses_profile_config_base_url() {
+        let (server_url, server) = spawn_http_server("text/plain", "pong".to_string());
+        let profile = RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            config_contents: format!(
+                "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"{server_url}\"\n"
+            ),
+            ..RelayProfile::default()
+        };
+
+        let result = tauri::async_runtime::block_on(measure_relay_profile_latency(profile));
+
+        server.join().unwrap();
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.http_status, Some(200));
+        assert!(result.payload.latency_ms.is_some());
+    }
+
+    #[test]
+    fn measure_relay_profile_latency_requires_a_target_url() {
+        let profile = RelayProfile {
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: String::new(),
+            upstream_base_url: String::new(),
+            config_contents: String::new(),
+            ..RelayProfile::default()
+        };
+
+        let result = tauri::async_runtime::block_on(measure_relay_profile_latency(profile));
+
+        assert_eq!(result.status, "failed");
+        assert!(result.message.contains("服务地址"));
+        assert_eq!(result.payload.latency_ms, None);
     }
 
     #[test]

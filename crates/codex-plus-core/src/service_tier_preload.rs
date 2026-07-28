@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -35,6 +35,22 @@ pub fn node_options_with_service_tier_preload(
     }
 }
 
+pub fn service_tier_preload_inspector_script(preload_path: &Path) -> anyhow::Result<String> {
+    let preload_path = serde_json::to_string(&preload_path.to_string_lossy())?;
+    Ok(format!(
+        r#"
+(() => {{
+  const Module = process.getBuiltinModule?.("module");
+  if (!Module || typeof Module._load !== "function") {{
+    throw new Error("Node module loader unavailable");
+  }}
+  Module._load({preload_path}, null, true);
+  return "codex-plus-service-tier-preload-loaded";
+}})()
+"#
+    ))
+}
+
 pub fn service_tier_preload_script() -> &'static str {
     r#""use strict";
 
@@ -43,7 +59,7 @@ const path = require("path");
 const Module = require("module");
 
 const PATCH_MARK = Symbol.for("codex-plus.service-tier-protocol-handle-patched");
-const PATCH_VERSION = "protocol-handle-3";
+const PATCH_VERSION = "protocol-handle-5";
 const LOG_PATH = path.join(process.env.HOME || process.cwd(), ".codex-deck", "codex-plus.log");
 const SETTINGS_PATH = path.join(process.env.HOME || process.cwd(), ".codex-deck", "settings.json");
 
@@ -100,6 +116,10 @@ function patchReadServiceTierAsset(source) {
     patched,
     [
       [
+        "let n=await MWi(e,t);if(n!==`chatgpt`)return!1;let r=await Y8n(t,{priority:`critical`});",
+        "let n=await MWi(e,t);if(n===`apikey`)return!0;if(n!==`chatgpt`)return!1;let r=await Y8n(t,{priority:`critical`});",
+      ],
+      [
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:!1",
         "return n===`chatgpt`?(await e.query.fetch(c,{authMethod:n,hostId:t})).requirements?.featureRequirements?.fast_mode!==!1:n===`apikey`",
       ],
@@ -121,6 +141,10 @@ function patchReadServiceTierAsset(source) {
   patched = replaceOneOf(
     patched,
     [
+      [
+        "return o.service_tier==null?Qer(await IWi(t,n??o.model),o.service_tier,r):Qer(null,o.service_tier,r)",
+        "return o.service_tier==null?Qer(await IWi(t,n??o.model),o.service_tier,r):Qer(await IWi(t,n??o.model),o.service_tier,r)",
+      ],
       [
         "return d.service_tier==null?t(await m(o,c??d.model),d.service_tier,s):t(null,d.service_tier,s)",
         "return d.service_tier==null?t(await m(o,c??d.model),d.service_tier,s):t(await m(o,c??d.model),d.service_tier,s)",
@@ -307,6 +331,19 @@ mod tests {
     }
 
     #[test]
+    fn inspector_script_loads_preload_with_node_builtin_module() {
+        let script = service_tier_preload_inspector_script(Path::new(
+            r"C:\Users\Jane Doe\.codex-deck\preload\service-tier-preload.js",
+        ))
+        .unwrap();
+
+        assert!(script.contains("process.getBuiltinModule?.(\"module\")"));
+        assert!(script.contains(
+            r#"Module._load("C:\\Users\\Jane Doe\\.codex-deck\\preload\\service-tier-preload.js", null, true)"#
+        ));
+    }
+
+    #[test]
     fn preload_script_wraps_electron_module_load_and_app_protocol() {
         let script = service_tier_preload_script();
 
@@ -319,6 +356,14 @@ mod tests {
         assert!(script.contains("isReadServiceTierCandidate"));
         assert!(script.contains("replaceOneOf"));
         assert!(script.contains("a=i?.authMethod===`chatgpt`||i?.authMethod===`apikey`"));
+        assert!(
+            script.contains(
+                "let n=await MWi(e,t);if(n===`apikey`)return!0;if(n!==`chatgpt`)return!1;"
+            )
+        );
+        assert!(script.contains(
+            "return o.service_tier==null?Qer(await IWi(t,n??o.model),o.service_tier,r):Qer(await IWi(t,n??o.model),o.service_tier,r)"
+        ));
         assert!(script.contains("e.query.fetch(Gd,{authMethod:n,hostId:t})"));
         assert!(script.contains("jd(await fQe(t,n??o.model),o.service_tier,r)"));
         assert!(script.contains("n===`apikey`"));

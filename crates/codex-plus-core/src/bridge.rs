@@ -125,6 +125,38 @@ pub async fn evaluate_script_with_await_promise(
     ensure_runtime_evaluate_succeeded(response)
 }
 
+pub async fn evaluate_script_and_resume_debugger(
+    websocket_url: &str,
+    script: &str,
+) -> anyhow::Result<Value> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    let evaluation = session
+        .send_command(1, "Runtime.evaluate", runtime_evaluate_params(script))
+        .await;
+    let resume = session
+        .send_command(2, "Runtime.runIfWaitingForDebugger", json!({}))
+        .await
+        .context("failed to resume Electron after preload injection");
+
+    resume?;
+    ensure_runtime_evaluate_succeeded(evaluation?)
+}
+
+/// Release a Node process started with `--inspect-brk` without evaluating code first.
+///
+/// This is only used as a last-resort escape hatch when bootstrap injection cannot
+/// complete. Keeping it separate makes the failure path explicit at call sites.
+pub async fn resume_waiting_debugger(websocket_url: &str) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    session
+        .send_command(1, "Runtime.runIfWaitingForDebugger", json!({}))
+        .await
+        .context("failed to resume Electron waiting for debugger")?;
+    Ok(())
+}
+
 pub async fn run_periodic_evaluations<F>(
     websocket_url: &str,
     period: Duration,

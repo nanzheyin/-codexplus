@@ -1946,8 +1946,8 @@ export function App() {
     return result ?? null;
   };
 
-  const measureRelayLatency = async (url: string) => {
-    return await run(() => call<RelayLatencyResult>("measure_relay_latency", { url }));
+  const measureRelayProfileLatency = async (profile: RelayProfile) => {
+    return await run(() => call<RelayLatencyResult>("measure_relay_profile_latency", { profile }));
   };
 
   const diagnoseRelayProfile = async (profile: RelayProfile) => {
@@ -2327,7 +2327,7 @@ export function App() {
       deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
-      measureRelayLatency,
+      measureRelayProfileLatency,
       diagnoseRelayProfile,
       testStepwiseSettings,
       fetchRelayProfileModels,
@@ -2512,6 +2512,7 @@ export function App() {
             <OverviewScreen
               overview={overview}
               relay={relay}
+              relayFiles={relayFiles}
               form={settingsForm}
               connectionVerified={connectionVerified}
               experienceMode={experienceMode}
@@ -2718,7 +2719,7 @@ type Actions = {
   deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<RelayProfileTestResult | null>;
-  measureRelayLatency: (url: string) => Promise<RelayLatencyResult | null>;
+  measureRelayProfileLatency: (profile: RelayProfile) => Promise<RelayLatencyResult | null>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
@@ -2778,6 +2779,7 @@ function ExperienceModeScreen({ onSelect }: { onSelect: (mode: ExperienceMode) =
 function OverviewScreen({
   overview,
   relay,
+  relayFiles,
   form,
   connectionVerified,
   experienceMode,
@@ -2787,6 +2789,7 @@ function OverviewScreen({
 }: {
   overview: OverviewResult | null;
   relay: RelayResult | null;
+  relayFiles: RelayFilesResult | null;
   form: BackendSettings;
   connectionVerified: boolean;
   experienceMode: ExperienceMode;
@@ -2806,7 +2809,18 @@ function OverviewScreen({
   const accountLabel = activeProvider.relayMode === "official"
     ? relay?.accountLabel || t("官方账号")
     : activeProvider.name || t("API 服务");
-  const modelLabel = activeProvider.model || activeProvider.testModel || form.relayTestModel || t("默认模型");
+  const modelLabel = rootTomlString(relayFiles?.configContents || "", "model")
+    || rootTomlString(activeProvider.configContents, "model")
+    || activeProvider.model
+    || t("由 Codex 自动选择");
+  const connectionReady = activeProvider.relayMode === "official"
+    ? relay?.authenticated === true
+    : relayProfileSwitchValidation(activeProvider) === null;
+  const connectionLabel = connectionVerified
+    ? t("已验证")
+    : connectionReady
+      ? activeProvider.relayMode === "official" ? t("已登录（未测试）") : t("已配置（未测试）")
+      : activeProvider.relayMode === "official" ? t("未登录") : t("配置不完整");
   const setupSteps = [
     {
       title: t("检测 Codex"),
@@ -2936,9 +2950,9 @@ function OverviewScreen({
         <div><span>{t("当前模型")}</span><strong>{modelLabel}</strong></div>
         <div>
           <span>{t("连接状态")}</span>
-          <strong className={connectionVerified ? "connection-ok" : "connection-pending"}>
-            {connectionVerified ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
-            {connectionVerified ? t("已验证") : t("未验证")}
+          <strong className={connectionVerified || connectionReady ? "connection-ok" : "connection-pending"}>
+            {connectionVerified || connectionReady ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+            {connectionLabel}
           </strong>
         </div>
         <Button onClick={() => void actions.goRoute("relay")} variant="outline">{t("更换账号或模型")}</Button>
@@ -3293,6 +3307,7 @@ function RelayScreen({
         </div>
         <RelayProfileList
           form={normalized}
+          relayFiles={relayFiles}
           localRelayEnabled={localRelayEnabled}
           onEdit={(profileId) => void editRelayProfile(profileId)}
           onFormChange={saveRelaySettings}
@@ -5373,6 +5388,7 @@ function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsRe
 
 function RelayProfileList({
   form,
+  relayFiles,
   localRelayEnabled,
   profiles,
   view,
@@ -5384,6 +5400,7 @@ function RelayProfileList({
   protectedProviderIds,
 }: {
   form: BackendSettings;
+  relayFiles: RelayFilesResult | null;
   localRelayEnabled: boolean;
   profiles: RelayProfile[];
   view: RelayListView;
@@ -5418,6 +5435,7 @@ function RelayProfileList({
               actions={actions}
               protectedProviderIds={protectedProviderIds}
               form={form}
+              relayFiles={relayFiles}
               localRelayEnabled={localRelayEnabled}
               key={profile.id}
               onEdit={onEdit}
@@ -5437,6 +5455,7 @@ function RelayProfileList({
 
 function SortableRelayProfileCard({
   form,
+  relayFiles,
   localRelayEnabled,
   profile,
   view,
@@ -5448,6 +5467,7 @@ function SortableRelayProfileCard({
   protectedProviderIds,
 }: {
   form: BackendSettings;
+  relayFiles: RelayFilesResult | null;
   localRelayEnabled: boolean;
   profile: RelayProfile;
   view: RelayListView;
@@ -5464,7 +5484,10 @@ function SortableRelayProfileCard({
   });
   const selectedDirectProvider = profile.id === form.activeRelayId;
   const active = selectedDirectProvider && !localRelayEnabled;
-  const latencyTarget = relayProfileLatencyTarget(profile);
+  const latencyProfile = selectedDirectProvider && relayFiles?.configContents.trim()
+    ? { ...profile, configContents: relayFiles.configContents }
+    : profile;
+  const latencyTarget = relayProfileLatencyTarget(latencyProfile);
   const latencyRequestRef = useRef(0);
   const [latency, setLatency] = useState<{ status: "idle" | "loading" | "ok" | "failed"; latencyMs: number | null }>({
     status: "idle",
@@ -5481,7 +5504,7 @@ function SortableRelayProfileCard({
       return;
     }
     setLatency({ status: "loading", latencyMs: null });
-    const result = await actions.measureRelayLatency(latencyTarget);
+    const result = await actions.measureRelayProfileLatency(latencyProfile);
     if (requestId !== latencyRequestRef.current) return;
     setLatency(
       result && isSuccessStatus(result.status) && result.latencyMs !== null
@@ -5495,6 +5518,11 @@ function SortableRelayProfileCard({
     setLatency({ status: "idle", latencyMs: null });
   }, [latencyTarget]);
 
+  useEffect(() => {
+    if (!active || !latencyTarget) return;
+    void refreshLatency();
+  }, [active, latencyTarget]);
+
   const aggregateProfile = isAggregateRelayProfile(profile);
   const aggregateCandidates = aggregateProfile ? aggregateMemberCandidates(form, profile.id) : [];
   const aggregateConfig = aggregateProfile ? normalizeAggregateConfig(profile.aggregate, aggregateCandidates) : null;
@@ -5505,19 +5533,21 @@ function SortableRelayProfileCard({
   const baseUrl = profile.protocol === "chatCompletions"
     ? profile.upstreamBaseUrl || profile.baseUrl
     : profile.baseUrl || profile.upstreamBaseUrl;
-  const latencyLabel = latency.status === "loading"
-    ? "..."
-    : latency.status === "ok" && latency.latencyMs !== null
-      ? tf("{0} ms", [latency.latencyMs])
-      : latency.status === "failed"
-        ? t("不可用")
-        : "--";
+  const latencyLabel = !latencyTarget
+    ? t("无可测地址")
+    : latency.status === "loading"
+      ? "..."
+      : latency.status === "ok" && latency.latencyMs !== null
+        ? tf("{0} ms", [latency.latencyMs])
+        : latency.status === "failed"
+          ? t("不可用")
+          : "--";
   const latencyTone = latency.status === "failed"
     ? "bad"
     : latency.status === "ok" && latency.latencyMs !== null
       ? latency.latencyMs <= 450 ? "good" : latency.latencyMs <= 900 ? "warn" : "bad"
       : "muted";
-  const latencyMeter = relayLatencyHealthPercent(latency.status, latency.latencyMs);
+  const latencyMeter = latencyTarget ? relayLatencyHealthPercent(latency.status, latency.latencyMs) : 0;
   const deleteProtected = protectedProviderIds.has(profile.id);
   const actionButtons = (
     <>
@@ -5638,7 +5668,7 @@ function SortableRelayProfileCard({
             event.stopPropagation();
             void refreshLatency();
           }}
-          title={latencyTarget ? t("重新检测延迟") : t("此供应商没有单一目标 URL")}
+          title={latencyTarget ? t("重新检测服务可达延迟") : t("此供应商没有可测的服务地址")}
           type="button"
         >
           <Gauge className="h-4 w-4" />
@@ -5734,7 +5764,7 @@ function SortableRelayProfileCard({
                 event.stopPropagation();
                 void refreshLatency();
               }}
-              title={latencyTarget ? t("重新检测延迟") : t("此供应商没有单一目标 URL")}
+              title={latencyTarget ? t("重新检测服务可达延迟") : t("此供应商没有可测的服务地址")}
               type="button"
             >
               {latencyLabel}
@@ -5758,9 +5788,11 @@ function SortableRelayProfileCard({
               ? t("正在检测")
               : latency.status === "failed"
                 ? t("检测失败")
-                : latency.status === "ok"
-                  ? t("刚刚检测")
-                  : t("未检测")}
+                : !latencyTarget
+                  ? t("无可测地址")
+                  : latency.status === "ok"
+                    ? t("刚刚检测")
+                    : t("未检测")}
         </span>
         <span className="relay-card-actions">{actionButtons}</span>
       </div>
@@ -8587,11 +8619,66 @@ function relayLatencyHealthPercent(status: "idle" | "loading" | "ok" | "failed",
 
 function relayProfileLatencyTarget(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) return "";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "";
   if (profile.protocol === "chatCompletions") {
-    return (profile.upstreamBaseUrl || profile.baseUrl).trim();
+    const upstreamBaseUrl = profile.upstreamBaseUrl.trim()
+      || rootTomlString(profile.configContents, "chat_upstream_base_url");
+    if (upstreamBaseUrl) return upstreamBaseUrl;
+    if (profile.baseUrl.trim()) return profile.baseUrl.trim();
   }
-  return profile.baseUrl.trim();
+  return modelProviderTomlString(profile.configContents, "base_url") || profile.baseUrl.trim();
+}
+
+function rootTomlString(contents: string, key: string): string {
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[")) return "";
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex === -1 || trimmed.slice(0, equalsIndex).trim() !== key) continue;
+    return tomlStringValue(trimmed.slice(equalsIndex + 1));
+  }
+  return "";
+}
+
+function modelProviderTomlString(contents: string, key: string): string {
+  const providerId = rootTomlString(contents, "model_provider") || "custom";
+  const providerTable = `[model_providers.${providerId}]`;
+  let inProviderTable = false;
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      if (trimmed === providerTable) {
+        inProviderTable = true;
+        continue;
+      }
+      if (inProviderTable) return "";
+      continue;
+    }
+    if (!inProviderTable || !trimmed || trimmed.startsWith("#")) continue;
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex === -1 || trimmed.slice(0, equalsIndex).trim() !== key) continue;
+    return tomlStringValue(trimmed.slice(equalsIndex + 1));
+  }
+  return "";
+}
+
+function tomlStringValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.lastIndexOf('"');
+    if (end > 0) {
+      try {
+        return JSON.parse(trimmed.slice(0, end + 1)) as string;
+      } catch {
+        return trimmed.slice(1, end);
+      }
+    }
+  }
+  if (trimmed.startsWith("'")) {
+    const end = trimmed.lastIndexOf("'");
+    if (end > 0) return trimmed.slice(1, end);
+  }
+  return trimmed.split("#", 1)[0].trim();
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {

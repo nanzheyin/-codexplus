@@ -275,7 +275,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "6";
+  const codexServiceTierBadgeVersion = "7";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -325,7 +325,7 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "5";
+  const codexServiceTierRequestOverrideVersion = "6";
   const codexServiceTierDispatcherRetryDelayMs = 5000;
   const codexServiceTierDispatcherRetryDelaysMs = [codexServiceTierDispatcherRetryDelayMs, 15000, 30000, 60000];
   const codexAppServerModelRequestPatchVersion = "1";
@@ -1273,9 +1273,17 @@
     effectiveMode: "standard",
     fastModelName: "",
     fastSupported: false,
+    nativeControl: false,
   };
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
+  const codexNativeServiceTierTriggerSelector = "button[data-codex-intelligence-trigger=\"true\"]";
+  const codexNativeServiceTierFastIndicatorSelector = "[class*=\"ModelPickerTriggerFastIndicator\"]";
+  const codexNativeServiceTierInlineFastIconSelector = "[class*=\"ModelPickerTriggerInlineFastIcon\"]";
+  const codexNativeServiceTierSpeedMenuItemSelector = "[role=\"menuitem\"][aria-label]";
+  let codexNativeServiceTierObservedButton = null;
+  let codexNativeServiceTierObserver = null;
+  let codexNativeServiceTierRefreshTimer = 0;
   const codexServiceTierModulePromises = new Map();
   let codexSettingStoragePromise = null;
   let codexServiceTierReadPromise = null;
@@ -1467,6 +1475,87 @@
   function isFastServiceTierValue(value) {
     const normalized = String(value || "").trim().toLowerCase();
     return normalized === "fast" || normalized === "priority";
+  }
+
+  function codexNativeServiceTierControlState() {
+    if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") return null;
+    try {
+      const buttons = Array.from(document.querySelectorAll(codexNativeServiceTierTriggerSelector) || [])
+        .filter(codexServiceTierElementVisibleForModelScan);
+      const button = buttons.find((candidate) => candidate.querySelector?.(codexNativeServiceTierFastIndicatorSelector));
+      if (!button) return null;
+      return {
+        button,
+        mode: button.querySelector?.(codexNativeServiceTierInlineFastIconSelector) ? "fast" : "standard",
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function codexNativeServiceTierSpeedMenuItem() {
+    if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") return null;
+    try {
+      return Array.from(document.querySelectorAll(codexNativeServiceTierSpeedMenuItemSelector) || [])
+        .filter(codexServiceTierElementVisibleForModelScan)
+        .find((item) => {
+          const label = `${item.getAttribute?.("aria-label") || ""} ${item.textContent || ""}`.replace(/\s+/g, " ").trim();
+          return /(?:^|\s)(?:速度|speed)(?:\s|$)/i.test(label);
+        }) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function codexNativeServiceTierOpenMenu() {
+    const nativeControl = codexNativeServiceTierControlState();
+    if (!nativeControl || typeof nativeControl.button?.click !== "function") return false;
+    try {
+      nativeControl.button.focus?.({ preventScroll: true });
+      nativeControl.button.click();
+    } catch (_) {
+      return false;
+    }
+    const openSpeedMenu = (attempt = 0) => {
+      const item = codexNativeServiceTierSpeedMenuItem();
+      if (item) {
+        if (typeof MouseEvent === "function" && typeof item.dispatchEvent === "function") {
+          ["pointermove", "mouseenter"].forEach((type) => {
+            item.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+          });
+        }
+        item.click?.();
+        return;
+      }
+      if (attempt < 8) window.setTimeout(() => openSpeedMenu(attempt + 1), 35);
+    };
+    window.setTimeout(() => openSpeedMenu(), 0);
+    return true;
+  }
+
+  function installCodexNativeServiceTierSync() {
+    const nativeControl = codexPlusSettings().serviceTierControls ? codexNativeServiceTierControlState() : null;
+    const button = nativeControl?.button || null;
+    if (button === codexNativeServiceTierObservedButton) return;
+    codexNativeServiceTierObserver?.disconnect();
+    codexNativeServiceTierObserver = null;
+    if (codexNativeServiceTierRefreshTimer) window.clearTimeout(codexNativeServiceTierRefreshTimer);
+    codexNativeServiceTierRefreshTimer = 0;
+    codexNativeServiceTierObservedButton = button;
+    if (!button || typeof MutationObserver !== "function") return;
+    codexNativeServiceTierObserver = new MutationObserver(() => {
+      if (codexNativeServiceTierRefreshTimer) window.clearTimeout(codexNativeServiceTierRefreshTimer);
+      codexNativeServiceTierRefreshTimer = window.setTimeout(() => {
+        codexNativeServiceTierRefreshTimer = 0;
+        if (codexNativeServiceTierObservedButton === button) refreshCodexServiceTierControls();
+      }, 0);
+    });
+    codexNativeServiceTierObserver.observe(button, {
+      attributes: true,
+      attributeFilter: ["class", "aria-label"],
+      childList: true,
+      subtree: true,
+    });
   }
 
   function codexFastServiceTierValue() {
@@ -1863,10 +1952,30 @@
         effectiveServiceTier: codexServiceTierState.serviceTier || null,
         effectiveMode: codexServiceTierEffectiveMode(codexServiceTierState.serviceTier),
         message: "未启用",
+        nativeControl: false,
       };
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
+    const nativeControl = codexNativeServiceTierControlState();
+    if (nativeControl) {
+      const effectiveMode = nativeControl.mode;
+      const fastAvailability = codexServiceTierFastAvailability();
+      codexServiceTierState = {
+        ...codexServiceTierState,
+        controlMode: "inherit",
+        defaultMode: "inherit",
+        activeThreadId,
+        threadMode: "inherit",
+        effectiveServiceTier: effectiveMode === "fast" ? codexFastServiceTierValue() : null,
+        effectiveMode,
+        fastModelName: fastAvailability.modelName,
+        fastSupported: effectiveMode === "fast" || fastAvailability.supported,
+        nativeControl: true,
+        message: `Codex 原生速度：${effectiveMode === "fast" ? "快速" : "标准"}`,
+      };
+      return;
+    }
     if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
@@ -1889,11 +1998,22 @@
       effectiveMode,
       fastModelName: fastAvailability.modelName,
       fastSupported: fastAvailability.supported,
+      nativeControl: false,
       message,
     };
   }
 
   function codexServiceTierBadgeState() {
+    const nativeControl = codexNativeServiceTierControlState();
+    if (nativeControl) {
+      const fast = nativeControl.mode === "fast";
+      const label = fast ? "快速" : "标准";
+      return {
+        tier: fast ? "fast" : "standard",
+        label,
+        title: `服务模式：${label}\n由 Codex 原生速度菜单控制；点击此标签打开同一菜单。`,
+      };
+    }
     if (codexPlusBackendStatus.status === "checking" || (codexPlusBackendStatus.status === "ok" && !codexPlusBackendSettingsLoaded)) return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
     if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
@@ -1912,8 +2032,8 @@
     if (effectiveMode === "fast" && fastAvailability.blocked) {
       return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
     }
-    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
-    return { tier: "standard", label: "standard", title };
+    if (effectiveMode === "fast") return { tier: "fast", label: "快速", title };
+    return { tier: "standard", label: "标准", title };
   }
 
   function refreshCodexServiceTierBadges() {
@@ -2081,6 +2201,7 @@
   }
 
   function toggleCodexServiceTierFromBadge() {
+    if (codexNativeServiceTierOpenMenu()) return;
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
@@ -2130,6 +2251,22 @@
   function codexServiceTierOverrideForRequest(method, params, threadIdHint = "") {
     if (!codexPlusSettings().serviceTierControls) return null;
     if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
+    const nativeControl = codexNativeServiceTierControlState();
+    if (nativeControl) {
+      const explicitServiceTier = params.serviceTier ?? params.service_tier;
+      const hasExplicitServiceTier = explicitServiceTier !== undefined;
+      const requestedServiceTier = hasExplicitServiceTier
+        ? explicitServiceTier
+        : nativeControl.mode === "fast" ? codexFastServiceTierValue() : null;
+      const override = codexServiceTierOverrideResult(
+        method,
+        params,
+        threadIdHint,
+        "native",
+        requestedServiceTier
+      );
+      return override.fastBlocked || !hasExplicitServiceTier ? override : null;
+    }
     const state = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
@@ -4228,6 +4365,12 @@
       },
       setServiceTierState: (state = {}) => {
         codexServiceTierState = { ...codexServiceTierState, ...state };
+      },
+      nativeControlState: () => codexNativeServiceTierControlState(),
+      openNativeServiceTierMenu: () => codexNativeServiceTierOpenMenu(),
+      syncServiceTierState: () => {
+        syncCodexServiceTierEffectiveState();
+        return { ...codexServiceTierState };
       },
       badgeState: () => codexServiceTierBadgeState(),
       setBackendReady: () => {
@@ -7941,6 +8084,7 @@
     installThreadScrollRouteHooks();
     scheduleThreadScrollSync(true);
     refreshCodexServiceTierControls();
+    installCodexNativeServiceTierSync();
   }
 
   function scanDeferred() {

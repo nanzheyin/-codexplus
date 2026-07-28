@@ -103,6 +103,7 @@ pub fn run() {
             commands::extract_relay_common_config,
             commands::test_relay_profile,
             commands::measure_relay_latency,
+            commands::measure_relay_profile_latency,
             commands::diagnose_relay_profile,
             commands::test_stepwise_settings,
             commands::fetch_relay_profile_models,

@@ -665,6 +665,13 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexThreadServiceTierOverrides"));
     assert!(script.contains("setCodexThreadServiceTierMode"));
     assert!(script.contains("codexServiceTierRequestOverride"));
+    assert!(script.contains("codexNativeServiceTierControlState"));
+    assert!(script.contains("codexNativeServiceTierOpenMenu"));
+    assert!(script.contains("installCodexNativeServiceTierSync"));
+    assert!(script.contains("data-codex-intelligence-trigger"));
+    assert!(script.contains("ModelPickerTriggerFastIndicator"));
+    assert!(script.contains("ModelPickerTriggerInlineFastIcon"));
+    assert!(script.contains("速度|speed"));
     assert!(script.contains("codexServiceTierSupportedFastModels"));
     assert!(script.contains("\"gpt-5.4\""));
     assert!(script.contains("\"gpt-5.5\""));
@@ -740,6 +747,8 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("service_tier=\\\"priority\\\""));
     assert!(script.contains("Fast 仅支持"));
     assert!(script.contains("当前 thread"));
+    assert!(script.contains("快速"));
+    assert!(script.contains("标准"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
     assert!(script.contains("[\"app-initial-\", \"setting-storage-\", \"vscode-api-\"]"));
@@ -862,8 +871,19 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["dispatcherFromSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
     assert_eq!(cases["settingStorageFromAppInitial"], true);
+    assert_eq!(cases["nativeFastState"]["nativeControl"], true);
+    assert_eq!(cases["nativeFastState"]["effectiveMode"], "fast");
+    assert_eq!(cases["nativeFastBadge"]["label"], "快速");
+    assert_eq!(cases["nativeFastRequest"]["serviceTier"], "priority");
+    assert_eq!(cases["nativeFastRequest"]["service_tier"], "priority");
+    assert_eq!(cases["nativeMenuOpened"], true);
+    assert_eq!(cases["nativeMenuTriggerClicks"], 1);
+    assert_eq!(cases["nativeSpeedMenuClicks"], 1);
+    assert_eq!(cases["nativeStandardState"]["nativeControl"], true);
+    assert_eq!(cases["nativeStandardState"]["effectiveMode"], "standard");
+    assert_eq!(cases["nativeStandardBadge"]["label"], "标准");
     assert_eq!(cases["degradedBadge"]["tier"], "standard");
-    assert_eq!(cases["degradedBadge"]["label"], "standard");
+    assert_eq!(cases["degradedBadge"]["label"], "标准");
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -887,6 +907,10 @@ function node() {{
     setAttribute() {{}},
     removeAttribute() {{}},
     addEventListener() {{}},
+    dispatchEvent() {{ return true; }},
+    click() {{}},
+    focus() {{}},
+    getAttribute() {{ return null; }},
     querySelector() {{ return null; }},
     querySelectorAll() {{ return []; }},
     closest() {{ return null; }},
@@ -895,10 +919,24 @@ function node() {{
     style: {{}},
     children: [],
     isConnected: true,
+    getBoundingClientRect: () => ({{ width: 1, height: 1 }}),
     textContent: "",
     innerHTML: "",
   }};
 }}
+const nativeTier = {{ available: false, fast: false }};
+let nativeMenuTriggerClicks = 0;
+let nativeSpeedMenuClicks = 0;
+const nativeTierButton = node();
+nativeTierButton.click = () => {{ nativeMenuTriggerClicks += 1; }};
+nativeTierButton.querySelector = (selector) => {{
+  if (selector.includes("ModelPickerTriggerFastIndicator")) return node();
+  if (selector.includes("ModelPickerTriggerInlineFastIcon")) return nativeTier.fast ? node() : null;
+  return null;
+}};
+const nativeSpeedMenuItem = node();
+nativeSpeedMenuItem.getAttribute = (name) => name === "aria-label" ? "速度 快速" : null;
+nativeSpeedMenuItem.click = () => {{ nativeSpeedMenuClicks += 1; }};
 globalThis.window = globalThis;
 window.__CODEX_PLUS_TEST_SERVICE_TIER__ = true;
 globalThis.document = {{
@@ -908,7 +946,11 @@ globalThis.document = {{
   createElement: () => node(),
   getElementById: () => null,
   querySelector: () => null,
-  querySelectorAll: () => [],
+  querySelectorAll: (selector) => {{
+    if (selector === "button[data-codex-intelligence-trigger=\"true\"]" && nativeTier.available) return [nativeTierButton];
+    if (selector === "[role=\"menuitem\"][aria-label]" && nativeTier.available) return [nativeSpeedMenuItem];
+    return [];
+  }},
   addEventListener() {{}},
   removeEventListener() {{}},
 }};
@@ -1054,7 +1096,31 @@ api.setServiceTierState({{
 }});
 const degradedBadge = api.badgeState();
 
-process.stdout.write(JSON.stringify({{
+nativeTier.available = true;
+nativeTier.fast = true;
+api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4"] }});
+api.setThreadState({{ mode: "global-standard", defaultMode: "standard", entries: {{}} }});
+api.setServiceTierState({{
+  status: "ok",
+  readDegraded: false,
+  serviceTier: null,
+  effectiveMode: "standard",
+  controlMode: "global-standard",
+  threadMode: "inherit",
+  defaultMode: "standard",
+}});
+const nativeFastState = api.syncServiceTierState();
+const nativeFastBadge = api.badgeState();
+const nativeFastRequest = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.4",
+}});
+const nativeMenuOpened = api.openNativeServiceTierMenu();
+nativeTier.fast = false;
+const nativeStandardState = api.syncServiceTierState();
+const nativeStandardBadge = api.badgeState();
+
+setTimeout(() => process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
   turnWithoutModel,
@@ -1071,8 +1137,16 @@ process.stdout.write(JSON.stringify({{
   dispatcherFromSingleton,
   dispatcherFromClass,
   settingStorageFromAppInitial,
+  nativeFastState,
+  nativeFastBadge,
+  nativeFastRequest,
+  nativeMenuOpened,
+  nativeMenuTriggerClicks,
+  nativeSpeedMenuClicks,
+  nativeStandardState,
+  nativeStandardBadge,
   degradedBadge,
-}}));
+}})), 20);
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
@@ -1646,6 +1720,101 @@ async fn list_targets_can_query_ipv6_loopback_cdp_endpoint() {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].id, "page-1");
     server.await.expect("server task should complete");
+}
+
+#[tokio::test]
+async fn bootstrap_evaluation_resumes_node_after_injecting_preload() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        let evaluate = recv_json(&mut socket).await;
+        assert_eq!(evaluate["id"], 1);
+        assert_eq!(evaluate["method"], "Runtime.evaluate");
+        assert_eq!(
+            evaluate["params"]["expression"],
+            "globalThis.preload = true;"
+        );
+        send_json(
+            &mut socket,
+            json!({ "id": 1, "result": { "result": { "value": true } } }),
+        )
+        .await;
+
+        let resume = recv_json(&mut socket).await;
+        assert_eq!(resume["id"], 2);
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        send_json(&mut socket, json!({ "id": 2, "result": {} })).await;
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    bridge::evaluate_script_and_resume_debugger(&url, "globalThis.preload = true;")
+        .await
+        .expect("preload should be evaluated before Node resumes");
+    request_rx
+        .await
+        .expect("server task should finish without panicking");
+}
+
+#[tokio::test]
+async fn bootstrap_evaluation_resumes_node_when_preload_evaluation_fails() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        let evaluate = recv_json(&mut socket).await;
+        assert_eq!(evaluate["method"], "Runtime.evaluate");
+        send_json(
+            &mut socket,
+            json!({ "id": 1, "error": { "message": "preload failed" } }),
+        )
+        .await;
+
+        let resume = recv_json(&mut socket).await;
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        send_json(&mut socket, json!({ "id": 2, "result": {} })).await;
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    let error = bridge::evaluate_script_and_resume_debugger(&url, "throw new Error('nope');")
+        .await
+        .expect_err("failed preload evaluation should be reported after Node is resumed");
+    assert!(error.to_string().contains("Runtime.evaluate"));
+    request_rx
+        .await
+        .expect("server task should finish without panicking");
+}
+
+#[tokio::test]
+async fn bootstrap_evaluation_resumes_node_when_preload_throws() {
+    let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        let evaluate = recv_json(&mut socket).await;
+        assert_eq!(evaluate["method"], "Runtime.evaluate");
+        send_json(
+            &mut socket,
+            json!({
+                "id": 1,
+                "result": {
+                    "exceptionDetails": { "text": "preload threw" },
+                },
+            }),
+        )
+        .await;
+
+        let resume = recv_json(&mut socket).await;
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        send_json(&mut socket, json!({ "id": 2, "result": {} })).await;
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    let error = bridge::evaluate_script_and_resume_debugger(&url, "throw new Error('nope');")
+        .await
+        .expect_err("preload exception should be reported after Node is resumed");
+    assert!(
+        error
+            .to_string()
+            .contains("Runtime.evaluate raised an exception")
+    );
+    request_rx
+        .await
+        .expect("server task should finish without panicking");
 }
 
 #[tokio::test]

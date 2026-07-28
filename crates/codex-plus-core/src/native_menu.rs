@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -5,6 +6,11 @@ use serde_json::json;
 
 const MENU_LOCALIZATION_RETRIES: usize = 20;
 const MENU_LOCALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
+const BOOTSTRAP_INSPECTOR_RETRIES: usize = 12;
+const BOOTSTRAP_INSPECTOR_RETRY_DELAY: Duration = Duration::from_millis(250);
+const BOOTSTRAP_INSPECTOR_QUERY_TIMEOUT: Duration = Duration::from_secs(1);
+const BOOTSTRAP_RESUME_WATCHDOG_RETRIES: usize = 120;
+const BOOTSTRAP_RESUME_WATCHDOG_DELAY: Duration = Duration::from_millis(500);
 
 const MENU_LABEL_TRANSLATIONS: &[(&str, &str)] = &[
     ("File", "文件"),
@@ -112,6 +118,14 @@ pub async fn install_native_menu_localizer(inspector_port: u16) -> anyhow::Resul
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("native menu localization failed")))
 }
 
+pub async fn install_native_menu_localizer_with_service_tier_preload(
+    inspector_port: u16,
+    preload_path: &Path,
+) -> anyhow::Result<()> {
+    install_service_tier_preload_before_app(inspector_port, preload_path).await?;
+    install_native_menu_localizer(inspector_port).await
+}
+
 pub fn native_menu_localizer_script() -> anyhow::Result<String> {
     let translations =
         serde_json::to_string(&MENU_LABEL_TRANSLATIONS.iter().copied().collect::<Vec<_>>())?;
@@ -163,25 +177,7 @@ pub fn native_menu_localizer_script() -> anyhow::Result<String> {
 }
 
 async fn try_install_native_menu_localizer(inspector_port: u16) -> anyhow::Result<()> {
-    let targets = crate::cdp::list_targets(inspector_port).await?;
-    let target = targets
-        .iter()
-        .find(|target| {
-            target
-                .web_socket_debugger_url
-                .as_deref()
-                .is_some_and(|url| !url.is_empty())
-                && target.target_type == "node"
-        })
-        .or_else(|| {
-            targets.iter().find(|target| {
-                target
-                    .web_socket_debugger_url
-                    .as_deref()
-                    .is_some_and(|url| !url.is_empty())
-            })
-        })
-        .context("No Electron main-process inspector target found")?;
+    let target = main_process_inspector_target(inspector_port).await?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -208,6 +204,208 @@ async fn try_install_native_menu_localizer(inspector_port: u16) -> anyhow::Resul
     Ok(())
 }
 
+async fn install_service_tier_preload_before_app(
+    inspector_port: u16,
+    preload_path: &Path,
+) -> anyhow::Result<()> {
+    let script = crate::service_tier_preload::service_tier_preload_inspector_script(preload_path)?;
+    let target = wait_for_main_process_inspector_target(inspector_port).await?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("selected inspector target has no websocket URL")?;
+
+    let result = match crate::bridge::evaluate_script_and_resume_debugger(websocket_url, &script)
+        .await
+        .context("failed to inject service tier preload before Electron bootstrap")
+    {
+        Ok(result) => result,
+        Err(error) => {
+            // 前一调用在脚本求值后会恢复进程；这里覆盖连接尚未建立、
+            // 尚未能发送求值命令的情况，避免 `--inspect-brk` 让 Codex 卡住。
+            if let Err(resume_error) = crate::bridge::resume_waiting_debugger(websocket_url).await {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "native_menu.service_tier_preload_resume_failed",
+                    json!({
+                        "inspector_port": inspector_port,
+                        "message": resume_error.to_string(),
+                    }),
+                );
+                start_bootstrap_resume_watchdog(inspector_port);
+            }
+            return Err(error);
+        }
+    };
+    if let Some(exception) = result
+        .get("result")
+        .and_then(|value| value.get("exceptionDetails"))
+    {
+        bail!("service tier preload threw: {exception}");
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "native_menu.service_tier_preload_installed",
+        json!({
+            "inspector_port": inspector_port,
+            "target_type": target.target_type,
+            "target_title": target.title,
+            "result": result
+        }),
+    );
+    Ok(())
+}
+
+async fn wait_for_main_process_inspector_target(
+    inspector_port: u16,
+) -> anyhow::Result<crate::cdp::CdpTarget> {
+    let mut last_error = None;
+    for attempt in 1..=BOOTSTRAP_INSPECTOR_RETRIES {
+        match tokio::time::timeout(
+            BOOTSTRAP_INSPECTOR_QUERY_TIMEOUT,
+            bootstrap_main_process_inspector_target(inspector_port),
+        )
+        .await
+        {
+            Ok(Ok(target)) => return Ok(target),
+            Ok(Err(error)) => {
+                last_error = Some(error);
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "native_menu.service_tier_preload_retry_failed",
+                    json!({
+                        "inspector_port": inspector_port,
+                        "attempt": attempt,
+                        "message": last_error.as_ref().map(ToString::to_string).unwrap_or_default()
+                    }),
+                );
+                tokio::time::sleep(BOOTSTRAP_INSPECTOR_RETRY_DELAY).await;
+            }
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!(
+                    "timed out waiting for the Node inspector target after {}ms",
+                    BOOTSTRAP_INSPECTOR_QUERY_TIMEOUT.as_millis()
+                ));
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "native_menu.service_tier_preload_retry_failed",
+                    json!({
+                        "inspector_port": inspector_port,
+                        "attempt": attempt,
+                        "message": last_error.as_ref().map(ToString::to_string).unwrap_or_default()
+                    }),
+                );
+                tokio::time::sleep(BOOTSTRAP_INSPECTOR_RETRY_DELAY).await;
+            }
+        }
+    }
+    let error = last_error.unwrap_or_else(|| anyhow::anyhow!("service tier preload failed"));
+    let resume_error = best_effort_resume_waiting_debugger(inspector_port)
+        .await
+        .err();
+    if resume_error.is_some() {
+        start_bootstrap_resume_watchdog(inspector_port);
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "native_menu.service_tier_preload_target_unavailable",
+        json!({
+            "inspector_port": inspector_port,
+            "message": error.to_string(),
+            "resume_error": resume_error.as_ref().map(ToString::to_string),
+        }),
+    );
+    Err(error)
+}
+
+async fn best_effort_resume_waiting_debugger(inspector_port: u16) -> anyhow::Result<()> {
+    let target = tokio::time::timeout(
+        BOOTSTRAP_INSPECTOR_QUERY_TIMEOUT,
+        bootstrap_main_process_inspector_target(inspector_port),
+    )
+    .await
+    .context("timed out locating Node inspector target for debugger resume")??;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("selected inspector target has no websocket URL")?;
+    crate::bridge::resume_waiting_debugger(websocket_url).await
+}
+
+fn start_bootstrap_resume_watchdog(inspector_port: u16) {
+    tokio::spawn(async move {
+        for attempt in 1..=BOOTSTRAP_RESUME_WATCHDOG_RETRIES {
+            match best_effort_resume_waiting_debugger(inspector_port).await {
+                Ok(()) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "native_menu.service_tier_preload_resume_watchdog_released",
+                        json!({
+                            "inspector_port": inspector_port,
+                            "attempt": attempt,
+                        }),
+                    );
+                    return;
+                }
+                Err(error) if attempt == BOOTSTRAP_RESUME_WATCHDOG_RETRIES => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "native_menu.service_tier_preload_resume_watchdog_failed",
+                        json!({
+                            "inspector_port": inspector_port,
+                            "attempt": attempt,
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(BOOTSTRAP_RESUME_WATCHDOG_DELAY).await;
+        }
+    });
+}
+
+async fn bootstrap_main_process_inspector_target(
+    inspector_port: u16,
+) -> anyhow::Result<crate::cdp::CdpTarget> {
+    let targets = crate::cdp::list_targets(inspector_port).await?;
+    pick_bootstrap_main_process_inspector_target(&targets)
+}
+
+fn pick_bootstrap_main_process_inspector_target(
+    targets: &[crate::cdp::CdpTarget],
+) -> anyhow::Result<crate::cdp::CdpTarget> {
+    targets
+        .iter()
+        .find(|target| {
+            target
+                .web_socket_debugger_url
+                .as_deref()
+                .is_some_and(|url| !url.is_empty())
+                && target.target_type == "node"
+        })
+        .cloned()
+        .context("No Electron main-process Node inspector target found")
+}
+
+async fn main_process_inspector_target(
+    inspector_port: u16,
+) -> anyhow::Result<crate::cdp::CdpTarget> {
+    let targets = crate::cdp::list_targets(inspector_port).await?;
+    targets
+        .iter()
+        .find(|target| {
+            target
+                .web_socket_debugger_url
+                .as_deref()
+                .is_some_and(|url| !url.is_empty())
+                && target.target_type == "node"
+        })
+        .or_else(|| {
+            targets.iter().find(|target| {
+                target
+                    .web_socket_debugger_url
+                    .as_deref()
+                    .is_some_and(|url| !url.is_empty())
+            })
+        })
+        .cloned()
+        .context("No Electron main-process inspector target found")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +418,46 @@ mod tests {
         assert!(script.contains("Toggle Sidebar"));
         assert!(script.contains("切换边栏"));
         assert!(!script.contains("app.asar"));
+    }
+
+    #[test]
+    fn service_tier_preload_starts_before_localizing_the_menu() {
+        let source = include_str!("native_menu.rs");
+
+        assert!(
+            source
+                .contains("install_service_tier_preload_before_app(inspector_port, preload_path)")
+        );
+        assert!(source.contains("evaluate_script_and_resume_debugger"));
+        assert!(source.contains("resume_waiting_debugger"));
+        assert!(source.contains("bootstrap_main_process_inspector_target"));
+    }
+
+    #[test]
+    fn bootstrap_target_requires_node_inspector() {
+        let renderer = crate::cdp::CdpTarget {
+            id: "renderer".to_string(),
+            target_type: "page".to_string(),
+            title: "Codex".to_string(),
+            url: "app://-/index.html".to_string(),
+            web_socket_debugger_url: Some("ws://127.0.0.1:9329/page/renderer".to_string()),
+        };
+        let node = crate::cdp::CdpTarget {
+            id: "main".to_string(),
+            target_type: "node".to_string(),
+            title: "ChatGPT".to_string(),
+            url: "file://main.js".to_string(),
+            web_socket_debugger_url: Some("ws://127.0.0.1:9329/node/main".to_string()),
+        };
+
+        let missing_node = pick_bootstrap_main_process_inspector_target(&[renderer.clone()])
+            .expect_err("renderer inspector cannot release the paused Node main process");
+        assert!(missing_node.to_string().contains("Node inspector target"));
+        assert_eq!(
+            pick_bootstrap_main_process_inspector_target(&[renderer, node])
+                .expect("Node inspector should be selected")
+                .id,
+            "main"
+        );
     }
 }
