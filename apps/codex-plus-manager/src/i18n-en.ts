@@ -305,6 +305,7 @@ export const EN_PLAIN: Record<string, string> = {
   "启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。":
     "Appended after the default CDP arguments when launching the Codex app. Leave empty to keep default launch behavior.",
   "启动 Codex": "Launch Codex",
+  "正在启动 Codex…": "Launching Codex…",
   "启动任务": "Launch task",
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
@@ -731,6 +732,7 @@ export const EN_PLAIN: Record<string, string> = {
     "This page has unsaved changes. They will be lost when you leave.",
   "放弃更改": "Discard changes",
   "重启 Codex": "Restart Codex",
+  "正在重启 Codex…": "Restarting Codex…",
   "已刷新 Codex 应用、入口、Watcher 和存储状态。":
     "Refreshed the Codex app, entrypoints, Watcher, and storage status.",
   "放弃本机文件更改": "Discard local file changes",

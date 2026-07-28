@@ -2161,6 +2161,10 @@ body {
   }
 }
 
+.launch-action-spinner {
+  animation: spin 850ms linear infinite;
+}
+
 .aggregate-fields {
   margin-top: 0;
 }

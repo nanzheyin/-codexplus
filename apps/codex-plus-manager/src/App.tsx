@@ -57,6 +57,7 @@ import {
   Plus,
   Play,
   RefreshCw,
+  RotateCw,
   Rocket,
   Save,
   Search,
@@ -94,6 +95,8 @@ import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 const codexDeckLogo = new URL("./assets/codex-deck-logo.svg", import.meta.url).href;
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
+
+type LaunchOperation = "launch" | "restart" | null;
 
 type CommandResult<T> = T & {
   status: Status;
@@ -943,6 +946,8 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const launchCommandInFlightRef = useRef(false);
+  const [launchOperation, setLaunchOperation] = useState<LaunchOperation>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
@@ -1473,34 +1478,37 @@ export function App() {
     await loadRouteData(route, moreSection);
   };
 
-  const launch = async () => {
-    const result = await launchCommand("launch_codex_plus");
-    if (result) {
-      showNotice(t("启动任务"), result.message, result.status);
-      await refreshOverview(true);
+  const runLaunchCommand = async (command: "launch_codex_plus" | "restart_codex_plus") => {
+    if (launchCommandInFlightRef.current) return;
+    launchCommandInFlightRef.current = true;
+    const operation: Exclude<LaunchOperation, null> = command === "restart_codex_plus" ? "restart" : "launch";
+    setLaunchOperation(operation);
+    try {
+      const [result] = await Promise.all([
+        run(() =>
+          call<CommandResult<Record<string, unknown>>>(command, {
+            request: {
+              appPath: launchForm.appPath,
+              debugPort: numberOrDefault(launchForm.debugPort, 9229),
+              helperPort: numberOrDefault(launchForm.helperPort, 57321),
+            },
+          }),
+        ),
+        new Promise((resolve) => window.setTimeout(resolve, 600)),
+      ]);
+      if (result) {
+        showNotice(operation === "restart" ? t("重启 Codex") : t("启动任务"), result.message, result.status);
+        await refreshOverview(true);
+      }
+    } finally {
+      launchCommandInFlightRef.current = false;
+      setLaunchOperation(null);
     }
   };
 
-  const restart = async () => {
-    const result = await launchCommand("restart_codex_plus");
-    if (result) {
-      showNotice(t("重启 Codex"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
+  const launch = () => runLaunchCommand("launch_codex_plus");
 
-  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus") => {
-    const result = await run(() =>
-      call<CommandResult<Record<string, unknown>>>(command, {
-        request: {
-          appPath: launchForm.appPath,
-          debugPort: numberOrDefault(launchForm.debugPort, 9229),
-          helperPort: numberOrDefault(launchForm.helperPort, 57321),
-        },
-      }),
-    );
-    return result;
-  };
+  const restart = () => runLaunchCommand("restart_codex_plus");
 
   const installEntrypoints = async () => {
     const result = await run(() => call<InstallResult>("install_entrypoints"));
@@ -2452,6 +2460,30 @@ export function App() {
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
             <Button
+              aria-label={
+                launchOperation === "restart"
+                  ? t("正在重启 Codex…")
+                  : launchOperation === "launch"
+                    ? t("正在启动 Codex…")
+                    : t("重启 Codex")
+              }
+              disabled={launchOperation !== null}
+              onClick={() => void actions.restart()}
+              size="icon"
+              title={
+                launchOperation === "restart"
+                  ? t("正在重启 Codex…")
+                  : launchOperation === "launch"
+                    ? t("正在启动 Codex…")
+                    : t("重启 Codex")
+              }
+              variant="outline"
+            >
+              {launchOperation !== null
+                ? <RefreshCw className="h-4 w-4 launch-action-spinner" />
+                : <RotateCw className="h-4 w-4" />}
+            </Button>
+            <Button
               aria-label={t("刷新当前页面")}
               onClick={() => void actions.refreshCurrent()}
               size="icon"
@@ -2471,6 +2503,7 @@ export function App() {
               connectionVerified={connectionVerified}
               experienceMode={experienceMode}
               sessionRepairCompleted={sessionRepairCompleted}
+              launchOperation={launchOperation}
               actions={actions}
             />
           ) : null}
@@ -2537,6 +2570,7 @@ export function App() {
                   watcher={watcher}
                   settings={settings}
                   launchForm={launchForm}
+                  launchOperation={launchOperation}
                   onLaunchFormChange={setLaunchForm}
                   removeOwnedData={removeOwnedData}
                   onRemoveOwnedDataChange={setRemoveOwnedData}
@@ -2735,6 +2769,7 @@ function OverviewScreen({
   connectionVerified,
   experienceMode,
   sessionRepairCompleted,
+  launchOperation,
   actions,
 }: {
   overview: OverviewResult | null;
@@ -2743,6 +2778,7 @@ function OverviewScreen({
   connectionVerified: boolean;
   experienceMode: ExperienceMode;
   sessionRepairCompleted: boolean;
+  launchOperation: LaunchOperation;
   actions: Actions;
 }) {
   const activeProvider = activeRelayProfile(normalizeSettings(form));
@@ -2863,9 +2899,23 @@ function OverviewScreen({
             <p>{overview?.latest_launch ? tf("上次启动：{0}", [formatTime(overview.latest_launch.started_at_ms)]) : t("尚无启动记录")}</p>
           </div>
         </div>
-        <Button className="daily-launch-button" onClick={() => void actions.launch()}>
-          <Rocket className="h-5 w-5" />
-          {t("启动 Codex")}
+        <Button
+          className="daily-launch-button"
+          disabled={launchOperation !== null}
+          onClick={() => void (launched ? actions.restart() : actions.launch())}
+        >
+          {launchOperation !== null
+            ? <RefreshCw className="h-5 w-5 launch-action-spinner" />
+            : launched
+              ? <RotateCw className="h-5 w-5" />
+              : <Rocket className="h-5 w-5" />}
+          {launchOperation === "restart"
+            ? t("正在重启 Codex…")
+            : launchOperation === "launch"
+              ? t("正在启动 Codex…")
+              : launched
+                ? t("重启 Codex")
+                : t("启动 Codex")}
         </Button>
       </section>
       <section className="daily-account" aria-label={t("当前使用配置")}>
@@ -4294,6 +4344,7 @@ function MaintenanceScreen({
   watcher,
   settings,
   launchForm,
+  launchOperation,
   onLaunchFormChange,
   removeOwnedData,
   onRemoveOwnedDataChange,
@@ -4304,12 +4355,14 @@ function MaintenanceScreen({
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
+  launchOperation: LaunchOperation;
   onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
   removeOwnedData: boolean;
   onRemoveOwnedDataChange: (value: boolean) => void;
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  const codexRunning = overview?.latest_launch?.status === "running" || overview?.latest_launch?.status === "running_degraded";
   const [maintenanceSection, setMaintenanceSection] = useState<"health" | "storage" | "startup">("health");
   const maintenanceSections: Array<DeckSectionOption<typeof maintenanceSection>> = [
     { id: "health", label: t("检查与修复"), detail: t("应用、入口和接管状态"), icon: Stethoscope },
@@ -4484,7 +4537,23 @@ function MaintenanceScreen({
       </div>
       <div className="deck-save-bar maintenance-footer-bar">
         <div><span className={overview?.codex_app.status === "found" ? "ready" : ""} aria-hidden="true" /><div><strong>{t("当前 Codex 应用")}</strong><small>{overview?.codex_app.path || savedCodexAppPath || t("尚未识别应用路径")}</small></div></div>
-        <Button onClick={() => void actions.launch()}><Rocket className="h-4 w-4" />{t("启动 Codex")}</Button>
+        <Button
+          disabled={launchOperation !== null}
+          onClick={() => void (codexRunning ? actions.restart() : actions.launch())}
+        >
+          {launchOperation !== null
+            ? <RefreshCw className="h-4 w-4 launch-action-spinner" />
+            : codexRunning
+              ? <RotateCw className="h-4 w-4" />
+              : <Rocket className="h-4 w-4" />}
+          {launchOperation === "restart"
+            ? t("正在重启 Codex…")
+            : launchOperation === "launch"
+              ? t("正在启动 Codex…")
+              : codexRunning
+                ? t("重启 Codex")
+                : t("启动 Codex")}
+        </Button>
       </div>
     </div>
   );
