@@ -1,15 +1,23 @@
+use fs2::FileExt;
 use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PROVIDER: &str = "openai";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
+const PROVIDER_SYNC_LOCK_VERSION: u64 = 2;
+const PROVIDER_SYNC_LOCK_RETRY_COUNT: usize = 30;
+const PROVIDER_SYNC_LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
+const LEGACY_LOCK_CREATION_GRACE: Duration = Duration::from_secs(2);
+const LEGACY_LOCK_UNKNOWN_PROCESS_GRACE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,16 +251,24 @@ pub fn run_provider_sync_with_target(
             }
         };
     let lock_dir = home.join("tmp/provider-sync.lock");
-    if acquire_lock(&lock_dir).is_err() {
-        return result(
-            ProviderSyncStatus::Skipped,
-            format!("Provider sync lock exists: {}", lock_dir.to_string_lossy()),
-            &target_provider,
-            None,
-            0,
-            0,
-        );
-    }
+    let _lock = match acquire_lock(&lock_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            let message = if error.kind() == std::io::ErrorKind::WouldBlock {
+                "另一个历史会话同步任务正在运行，请稍后重试。".to_string()
+            } else {
+                format!("无法启动历史会话同步：{error}")
+            };
+            return result(
+                ProviderSyncStatus::Skipped,
+                message,
+                &target_provider,
+                None,
+                0,
+                0,
+            );
+        }
+    };
     let sync_result = (|| -> anyhow::Result<ProviderSyncResult> {
         let collected = collect_session_changes(&home, &target_provider)?;
         let encrypted_content_warning =
@@ -365,7 +381,6 @@ pub fn run_provider_sync_with_target(
         synced.encrypted_content_warning = encrypted_content_warning;
         Ok(synced)
     })();
-    let _ = release_lock(&lock_dir);
     sync_result.unwrap_or_else(|err| {
         result(
             ProviderSyncStatus::Skipped,
@@ -584,20 +599,154 @@ fn toml_string_value(raw: &str) -> Option<String> {
     None
 }
 
-fn acquire_lock(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
-    fs::create_dir(path)?;
-    fs::write(
-        path.join("owner.json"),
-        json!({"pid": std::process::id(), "startedAt": now_secs()}).to_string(),
-    )
+struct ProviderSyncLock {
+    owner_file: fs::File,
 }
 
-fn release_lock(path: &Path) -> std::io::Result<()> {
-    if path.exists() {
-        fs::remove_dir_all(path)?;
+impl Drop for ProviderSyncLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.owner_file);
     }
-    Ok(())
+}
+
+fn acquire_lock(path: &Path) -> std::io::Result<ProviderSyncLock> {
+    for attempt in 0..=PROVIDER_SYNC_LOCK_RETRY_COUNT {
+        match try_acquire_lock(path) {
+            Ok(lock) => return Ok(lock),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && attempt < PROVIDER_SYNC_LOCK_RETRY_COUNT =>
+            {
+                thread::sleep(PROVIDER_SYNC_LOCK_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("provider sync lock retry loop always returns")
+}
+
+fn try_acquire_lock(path: &Path) -> std::io::Result<ProviderSyncLock> {
+    fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    let directory_existed = match fs::create_dir(path) {
+        Ok(()) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => true,
+        Err(error) => return Err(error),
+    };
+    let directory_age = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok());
+    let owner_path = path.join("owner.json");
+    let owner_existed = owner_path.exists();
+    let mut owner_file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&owner_path)?;
+    FileExt::try_lock_exclusive(&owner_file).map_err(normalize_lock_error)?;
+
+    if legacy_lock_might_be_active(
+        &mut owner_file,
+        directory_existed,
+        owner_existed,
+        directory_age,
+    )? {
+        let _ = FileExt::unlock(&owner_file);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "legacy provider sync lock is still active",
+        ));
+    }
+
+    owner_file.set_len(0)?;
+    owner_file.seek(SeekFrom::Start(0))?;
+    owner_file.write_all(
+        json!({
+            "lockVersion": PROVIDER_SYNC_LOCK_VERSION,
+            "pid": std::process::id(),
+            "startedAt": now_secs(),
+        })
+        .to_string()
+        .as_bytes(),
+    )?;
+    owner_file.flush()?;
+    Ok(ProviderSyncLock { owner_file })
+}
+
+fn normalize_lock_error(error: std::io::Error) -> std::io::Error {
+    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "provider sync lock is already held",
+        )
+    } else {
+        error
+    }
+}
+
+fn legacy_lock_might_be_active(
+    owner_file: &mut fs::File,
+    directory_existed: bool,
+    owner_existed: bool,
+    directory_age: Option<Duration>,
+) -> std::io::Result<bool> {
+    if !directory_existed {
+        return Ok(false);
+    }
+    if !owner_existed {
+        return Ok(directory_age.is_some_and(|age| age < LEGACY_LOCK_CREATION_GRACE));
+    }
+
+    owner_file.seek(SeekFrom::Start(0))?;
+    let mut text = String::new();
+    owner_file.read_to_string(&mut text)?;
+    let Ok(owner) = serde_json::from_str::<Value>(&text) else {
+        return Ok(directory_age.is_some_and(|age| age < LEGACY_LOCK_CREATION_GRACE));
+    };
+    if owner.get("lockVersion").and_then(Value::as_u64) == Some(PROVIDER_SYNC_LOCK_VERSION) {
+        return Ok(false);
+    }
+    let Some(process_id) = owner
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+    else {
+        return Ok(directory_age.is_some_and(|age| age < LEGACY_LOCK_CREATION_GRACE));
+    };
+    Ok(match process_id_is_running(process_id) {
+        Some(running) => running,
+        None => owner
+            .get("startedAt")
+            .and_then(Value::as_u64)
+            .map(|started_at| now_secs().saturating_sub(started_at))
+            .is_some_and(|age| age < LEGACY_LOCK_UNKNOWN_PROCESS_GRACE.as_secs()),
+    })
+}
+
+fn process_id_is_running(process_id: u32) -> Option<bool> {
+    if process_id == std::process::id() {
+        return Some(true);
+    }
+    #[cfg(windows)]
+    {
+        return codex_plus_core::windows_process_id_is_running(process_id);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return Some(Path::new("/proc").join(process_id.to_string()).exists());
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        return std::process::Command::new("/bin/ps")
+            .args(["-p", &process_id.to_string(), "-o", "pid="])
+            .output()
+            .ok()
+            .map(|output| output.status.success() && !output.stdout.is_empty());
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 fn collect_session_changes(home: &Path, target_provider: &str) -> anyhow::Result<SessionChanges> {
@@ -907,8 +1056,8 @@ pub fn apply_session_index_cleanup(
         .map(Path::to_path_buf)
         .unwrap_or_else(codex_plus_core::codex_sqlite::default_codex_home_dir);
     let lock_dir = home.join("tmp/provider-sync.lock");
-    acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
-    let result = (|| {
+    let _lock = acquire_lock(&lock_dir).map_err(|error| cleanup_apply_error(error, None))?;
+    (|| {
         let sqlite_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
         let live_thread_ids = collect_live_thread_ids(&home, &sqlite_paths)
             .map_err(|error| cleanup_apply_error(error, None))?;
@@ -985,9 +1134,7 @@ pub fn apply_session_index_cleanup(
             app_state_pruned: app_state_prune.changed,
             app_state_backup_dir: app_state_prune.backup_path,
         })
-    })();
-    let _ = release_lock(&lock_dir);
-    result
+    })()
 }
 
 pub fn prune_deleted_thread_references(

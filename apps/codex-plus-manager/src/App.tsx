@@ -955,6 +955,7 @@ export function App() {
     message: t("尚未运行历史会话修复。"),
     result: null,
   });
+  const providerSyncInFlightRef = useRef(false);
   const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
@@ -1734,7 +1735,8 @@ export function App() {
   };
 
   const syncProvidersNow = async (): Promise<CommandResult<ProviderSyncPayload> | null> => {
-    if (providerSyncProgress.active) return null;
+    if (providerSyncInFlightRef.current) return null;
+    providerSyncInFlightRef.current = true;
     setProviderSyncProgress({
       active: true,
       percent: 12,
@@ -1820,6 +1822,7 @@ export function App() {
       }
     } finally {
       window.clearInterval(progressTimer);
+      providerSyncInFlightRef.current = false;
     }
   };
 
@@ -2530,6 +2533,7 @@ export function App() {
               connectionVerified={connectionVerified}
               experienceMode={experienceMode}
               sessionRepairCompleted={sessionRepairCompleted}
+              sessionRepairInProgress={providerSyncProgress.active}
               launchOperation={launchOperation}
               actions={actions}
             />
@@ -2797,6 +2801,7 @@ function OverviewScreen({
   connectionVerified,
   experienceMode,
   sessionRepairCompleted,
+  sessionRepairInProgress,
   launchOperation,
   actions,
 }: {
@@ -2807,6 +2812,7 @@ function OverviewScreen({
   connectionVerified: boolean;
   experienceMode: ExperienceMode;
   sessionRepairCompleted: boolean;
+  sessionRepairInProgress: boolean;
   launchOperation: LaunchOperation;
   actions: Actions;
 }) {
@@ -2865,7 +2871,8 @@ function OverviewScreen({
       detail: sessionRepairCompleted ? t("旧会话与侧边栏索引已检查") : t("恢复旧会话并合并重复来源"),
       done: sessionRepairCompleted,
       action: () => actions.syncProvidersNow(),
-      actionLabel: t("开始检测与恢复"),
+      actionLabel: sessionRepairInProgress ? t("正在检测与恢复…") : t("开始检测与恢复"),
+      disabled: sessionRepairInProgress,
     },
     {
       title: t("创建入口并启动"),
@@ -2919,7 +2926,11 @@ function OverviewScreen({
                 <h3>{nextStep.title}</h3>
                 <p>{nextStep.detail}</p>
               </div>
-              <Button className="onboarding-primary-action" onClick={() => void nextStep.action()}>
+              <Button
+                className="onboarding-primary-action"
+                disabled={nextStep.disabled}
+                onClick={() => void nextStep.action()}
+              >
                 {nextStep.actionLabel}
                 <ChevronRight className="h-4 w-4" />
               </Button>

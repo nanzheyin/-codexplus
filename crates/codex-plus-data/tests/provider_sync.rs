@@ -3,10 +3,14 @@ use codex_plus_data::{
     load_provider_sync_targets, preview_session_index_cleanup, run_provider_sync,
     run_provider_sync_with_target,
 };
+use fs2::FileExt;
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
 
@@ -1053,7 +1057,7 @@ fn provider_sync_restores_global_state_when_later_step_fails() {
 }
 
 #[test]
-fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
+fn provider_sync_recovers_stale_lock_and_prunes_backups() {
     let tmp = tempdir().unwrap();
     let missing = tmp.path().join(".missing");
     let result = run_provider_sync(Some(&missing));
@@ -1062,12 +1066,12 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
     let home = tmp.path().join(".codex");
     fs::create_dir(&home).unwrap();
     fs::create_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
+    fs::write(
+        home.join("tmp/provider-sync.lock/owner.json"),
+        json!({"pid": u32::MAX, "startedAt": 0}).to_string(),
+    )
+    .unwrap();
     fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
-    let result = run_provider_sync(Some(&home));
-    assert_eq!(result.status, ProviderSyncStatus::Skipped);
-    assert!(result.message.to_lowercase().contains("lock"));
-
-    fs::remove_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
     let backup_root = home.join("backups_state/provider-sync");
     for index in 0..6 {
         let backup = backup_root.join(format!("2000010100000{index}"));
@@ -1086,11 +1090,90 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
     );
     let result = run_provider_sync(Some(&home));
     assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let rollout = fs::read_to_string(home.join("sessions/rollout-new.jsonl")).unwrap();
+    assert!(rollout.contains(r#""model_provider":"apigather""#));
     let backups = fs::read_dir(&backup_root)
         .unwrap()
         .filter(|entry| entry.as_ref().unwrap().path().is_dir())
         .count();
     assert_eq!(backups, 5);
+}
+
+#[test]
+fn provider_sync_reports_active_lock_without_bypassing_sync() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-active-lock.jsonl"),
+        "openai",
+        "thread-active-lock",
+        "C:/workspace",
+    );
+    let owner_path = home.join("tmp/provider-sync.lock/owner.json");
+    let mut owner = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(owner_path)
+        .unwrap();
+    owner.lock_exclusive().unwrap();
+    owner
+        .write_all(
+            json!({"lockVersion": 2, "pid": std::process::id()})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+
+    let result = run_provider_sync(Some(&home));
+
+    assert_eq!(result.status, ProviderSyncStatus::Skipped);
+    assert!(result.message.contains("另一个历史会话同步任务正在运行"));
+    let rollout = fs::read_to_string(home.join("sessions/rollout-active-lock.jsonl")).unwrap();
+    assert!(rollout.contains(r#""model_provider":"openai""#));
+    FileExt::unlock(&owner).unwrap();
+}
+
+#[test]
+fn provider_sync_waits_for_lock_release_then_runs_full_sync() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join(".codex");
+    fs::create_dir_all(home.join("tmp/provider-sync.lock")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"apigather\"\n").unwrap();
+    write_rollout(
+        &home.join("sessions/rollout-released-lock.jsonl"),
+        "openai",
+        "thread-released-lock",
+        "C:/workspace",
+    );
+    let owner_path = home.join("tmp/provider-sync.lock/owner.json");
+    let owner = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(owner_path)
+        .unwrap();
+    owner.lock_exclusive().unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let sync_home = home.clone();
+    let sync = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        run_provider_sync(Some(&sync_home))
+    });
+    started_rx.recv().unwrap();
+    thread::sleep(Duration::from_millis(200));
+    assert!(!sync.is_finished());
+
+    FileExt::unlock(&owner).unwrap();
+    let result = sync.join().unwrap();
+
+    assert_eq!(result.status, ProviderSyncStatus::Synced);
+    let rollout = fs::read_to_string(home.join("sessions/rollout-released-lock.jsonl")).unwrap();
+    assert!(rollout.contains(r#""model_provider":"apigather""#));
 }
 
 #[test]

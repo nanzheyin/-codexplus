@@ -6649,15 +6649,11 @@ model_reasoning_effort = "high"
         let _lock = test_env_lock();
         let temp = tempfile::tempdir().unwrap();
         let codex_home = temp.path().join("codex-home");
-        std::fs::create_dir_all(codex_home.join("tmp/provider-sync.lock")).unwrap();
-        std::fs::write(
-            codex_home.join("config.toml"),
-            "model_provider = \"custom\"\n",
-        )
-        .unwrap();
+        std::fs::create_dir(&codex_home).unwrap();
         let _home_guard = CodexHomeEnvGuard::set(&codex_home);
 
-        let result = tauri::async_runtime::block_on(sync_providers_now(None));
+        let result =
+            tauri::async_runtime::block_on(sync_providers_now(Some("bad/provider".to_string())));
 
         assert_eq!(result.status, "failed");
         assert_eq!(result.payload["syncStatus"], json!("skipped"));

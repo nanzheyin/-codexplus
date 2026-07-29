@@ -51,6 +51,20 @@ pub fn windows_create_no_window() -> u32 {
 }
 
 #[cfg(windows)]
+pub fn windows_process_id_is_running(process_id: u32) -> Option<bool> {
+    let processes = windows_integration::enumerate_processes();
+    if processes.is_empty() {
+        None
+    } else {
+        Some(
+            processes
+                .iter()
+                .any(|process| process.process_id == process_id),
+        )
+    }
+}
+
+#[cfg(windows)]
 pub fn windows_open_url(url: &str) -> anyhow::Result<()> {
     windows_integration::open_url(url)
 }
