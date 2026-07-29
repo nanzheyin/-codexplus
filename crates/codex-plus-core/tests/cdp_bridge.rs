@@ -871,7 +871,23 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["dispatcherFromSingleton"], true);
     assert_eq!(cases["dispatcherFromClass"], true);
     assert_eq!(cases["settingStorageFromAppInitial"], true);
+    assert_eq!(cases["localStandardState"]["nativeControl"], false);
+    assert_eq!(
+        cases["localStandardState"]["controlMode"],
+        "global-standard"
+    );
+    assert_eq!(cases["localStandardState"]["effectiveMode"], "standard");
+    assert_eq!(cases["localStandardBadge"]["label"], "标准");
+    assert_eq!(
+        cases["localStandardRequest"]["serviceTier"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        cases["localStandardRequest"]["service_tier"],
+        serde_json::Value::Null
+    );
     assert_eq!(cases["nativeFastState"]["nativeControl"], true);
+    assert_eq!(cases["nativeFastState"]["controlMode"], "inherit");
     assert_eq!(cases["nativeFastState"]["effectiveMode"], "fast");
     assert_eq!(cases["nativeFastBadge"]["label"], "快速");
     assert_eq!(cases["nativeFastRequest"]["serviceTier"], "priority");
@@ -882,6 +898,20 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["nativeStandardState"]["nativeControl"], true);
     assert_eq!(cases["nativeStandardState"]["effectiveMode"], "standard");
     assert_eq!(cases["nativeStandardBadge"]["label"], "标准");
+    assert_eq!(cases["localFastState"]["nativeControl"], false);
+    assert_eq!(cases["localFastState"]["controlMode"], "global-fast");
+    assert_eq!(cases["localFastState"]["effectiveMode"], "fast");
+    assert_eq!(cases["localFastBadge"]["label"], "快速");
+    assert_eq!(cases["localFastRequest"]["serviceTier"], "priority");
+    assert_eq!(cases["localFastRequest"]["service_tier"], "priority");
+    assert_eq!(cases["localToggleState"]["controlMode"], "custom");
+    assert_eq!(cases["localToggleState"]["threadMode"], "standard");
+    assert_eq!(cases["localToggleState"]["effectiveMode"], "standard");
+    assert_eq!(cases["localToggleBadge"]["label"], "标准");
+    assert_eq!(
+        cases["nativeMenuClicksAfterLocalToggle"],
+        cases["nativeMenuClicksBeforeLocalToggle"]
+    );
     assert_eq!(cases["degradedBadge"]["tier"], "standard");
     assert_eq!(cases["degradedBadge"]["label"], "标准");
 }
@@ -1109,6 +1139,15 @@ api.setServiceTierState({{
   threadMode: "inherit",
   defaultMode: "standard",
 }});
+const localStandardState = api.syncServiceTierState();
+const localStandardBadge = api.badgeState();
+const localStandardRequest = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.4",
+  service_tier: "priority",
+}});
+
+api.setThreadState({{ mode: "inherit", defaultMode: "inherit", entries: {{}} }});
 const nativeFastState = api.syncServiceTierState();
 const nativeFastBadge = api.badgeState();
 const nativeFastRequest = api.applyServiceTierOverride("turn/start", {{
@@ -1119,6 +1158,19 @@ const nativeMenuOpened = api.openNativeServiceTierMenu();
 nativeTier.fast = false;
 const nativeStandardState = api.syncServiceTierState();
 const nativeStandardBadge = api.badgeState();
+api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
+const localFastState = api.syncServiceTierState();
+const localFastBadge = api.badgeState();
+const localFastRequest = api.applyServiceTierOverride("turn/start", {{
+  threadId: "thread-12345678",
+  model: "gpt-5.4",
+  service_tier: null,
+}});
+const nativeMenuClicksBeforeLocalToggle = nativeMenuTriggerClicks;
+api.toggleFromBadge();
+const localToggleState = api.syncServiceTierState();
+const localToggleBadge = api.badgeState();
+const nativeMenuClicksAfterLocalToggle = nativeMenuTriggerClicks;
 
 setTimeout(() => process.stdout.write(JSON.stringify({{
   supportedFast,
@@ -1137,6 +1189,9 @@ setTimeout(() => process.stdout.write(JSON.stringify({{
   dispatcherFromSingleton,
   dispatcherFromClass,
   settingStorageFromAppInitial,
+  localStandardState,
+  localStandardBadge,
+  localStandardRequest,
   nativeFastState,
   nativeFastBadge,
   nativeFastRequest,
@@ -1145,6 +1200,13 @@ setTimeout(() => process.stdout.write(JSON.stringify({{
   nativeSpeedMenuClicks,
   nativeStandardState,
   nativeStandardBadge,
+  localFastState,
+  localFastBadge,
+  localFastRequest,
+  localToggleState,
+  localToggleBadge,
+  nativeMenuClicksBeforeLocalToggle,
+  nativeMenuClicksAfterLocalToggle,
   degradedBadge,
 }})), 20);
 "#,

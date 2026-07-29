@@ -1957,31 +1957,37 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    const nativeControl = codexNativeServiceTierControlState();
-    if (nativeControl) {
-      const effectiveMode = nativeControl.mode;
-      const fastAvailability = codexServiceTierFastAvailability();
-      codexServiceTierState = {
-        ...codexServiceTierState,
-        controlMode: "inherit",
-        defaultMode: "inherit",
-        activeThreadId,
-        threadMode: "inherit",
-        effectiveServiceTier: effectiveMode === "fast" ? codexFastServiceTierValue() : null,
-        effectiveMode,
-        fastModelName: fastAvailability.modelName,
-        fastSupported: effectiveMode === "fast" || fastAvailability.supported,
-        nativeControl: true,
-        message: `Codex 原生速度：${effectiveMode === "fast" ? "快速" : "标准"}`,
-      };
-      return;
-    }
     if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
     const override = activeThreadId ? codexThreadServiceTierOverride(activeThreadId) : codexThreadServiceTierDraft();
     const threadMode = normalizeCodexThreadServiceTierMode(override?.mode);
+    const configuredMode = controlMode === "custom"
+      ? codexServiceTierEffectiveThreadMode(threadMode, defaultMode)
+      : codexServiceTierDefaultModeForControlMode(controlMode);
+    const nativeControl = codexNativeServiceTierControlState();
+    if (nativeControl && configuredMode === "inherit") {
+      const effectiveMode = nativeControl.mode;
+      const fastAvailability = codexServiceTierFastAvailability();
+      const nativeMessage = `Codex 原生速度：${effectiveMode === "fast" ? "快速" : "标准"}`;
+      codexServiceTierState = {
+        ...codexServiceTierState,
+        controlMode,
+        defaultMode,
+        activeThreadId,
+        threadMode,
+        effectiveServiceTier: effectiveMode === "fast" ? codexFastServiceTierValue() : null,
+        effectiveMode,
+        fastModelName: fastAvailability.modelName,
+        fastSupported: effectiveMode === "fast" || fastAvailability.supported,
+        nativeControl: true,
+        message: controlMode === "inherit"
+          ? nativeMessage
+          : `${serviceTierStatusMessage(controlMode, threadMode, effectiveMode, defaultMode)}；${nativeMessage}`,
+      };
+      return;
+    }
     const effectiveServiceTier = codexServiceTierValueForControlMode(controlMode, threadMode, defaultMode);
     const effectiveMode = codexServiceTierEffectiveMode(effectiveServiceTier);
     const fastAvailability = codexServiceTierFastAvailability();
@@ -2004,9 +2010,8 @@
   }
 
   function codexServiceTierBadgeState() {
-    const nativeControl = codexNativeServiceTierControlState();
-    if (nativeControl) {
-      const fast = nativeControl.mode === "fast";
+    if (codexServiceTierState.nativeControl) {
+      const fast = codexServiceTierState.effectiveMode === "fast";
       const label = fast ? "快速" : "标准";
       return {
         tier: fast ? "fast" : "standard",
@@ -2201,13 +2206,13 @@
   }
 
   function toggleCodexServiceTierFromBadge() {
-    if (codexNativeServiceTierOpenMenu()) return;
+    syncCodexServiceTierEffectiveState();
+    if (codexServiceTierState.nativeControl && codexNativeServiceTierOpenMenu()) return;
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
       return;
     }
-    syncCodexServiceTierEffectiveState();
     const nextMode = codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast";
     if (nextMode === "fast") {
       const fastAvailability = codexServiceTierFastAvailability();
@@ -2251,30 +2256,9 @@
   function codexServiceTierOverrideForRequest(method, params, threadIdHint = "") {
     if (!codexPlusSettings().serviceTierControls) return null;
     if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
-    const nativeControl = codexNativeServiceTierControlState();
-    if (nativeControl) {
-      const explicitServiceTier = params.serviceTier ?? params.service_tier;
-      const hasExplicitServiceTier = explicitServiceTier !== undefined;
-      const requestedServiceTier = hasExplicitServiceTier
-        ? explicitServiceTier
-        : nativeControl.mode === "fast" ? codexFastServiceTierValue() : null;
-      const override = codexServiceTierOverrideResult(
-        method,
-        params,
-        threadIdHint,
-        "native",
-        requestedServiceTier
-      );
-      return override.fastBlocked || !hasExplicitServiceTier ? override : null;
-    }
     const state = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
-    if (controlMode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierState.serviceTier;
-      const override = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
-      return override.fastBlocked ? override : null;
-    }
     if (controlMode === "global-standard" || controlMode === "global-fast") {
       return codexServiceTierOverrideResult(
         method,
@@ -2284,19 +2268,41 @@
         controlMode === "global-fast" ? codexFastServiceTierValue() : null
       );
     }
-    const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
-    const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
-    const mode = codexServiceTierEffectiveThreadMode(override?.mode, defaultMode);
-    if (mode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierState.serviceTier;
-      const inheritedOverride = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
-      return inheritedOverride.fastBlocked ? { ...inheritedOverride, threadId, mode } : null;
+    const threadId = controlMode === "custom"
+      ? codexServiceTierThreadIdForRequest(method, params, threadIdHint)
+      : "";
+    if (controlMode === "custom") {
+      const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
+      const mode = codexServiceTierEffectiveThreadMode(override?.mode, defaultMode);
+      if (mode !== "inherit") {
+        return {
+          ...codexServiceTierOverrideResult(method, params, threadIdHint, mode, mode === "fast" ? codexFastServiceTierValue() : null),
+          threadId,
+          mode,
+        };
+      }
     }
-    return {
-      ...codexServiceTierOverrideResult(method, params, threadIdHint, mode, mode === "fast" ? codexFastServiceTierValue() : null),
-      threadId,
-      mode,
-    };
+    const nativeControl = codexNativeServiceTierControlState();
+    if (nativeControl) {
+      const explicitServiceTier = params.serviceTier ?? params.service_tier;
+      const hasExplicitServiceTier = explicitServiceTier !== undefined;
+      const requestedServiceTier = hasExplicitServiceTier
+        ? explicitServiceTier
+        : nativeControl.mode === "fast" ? codexFastServiceTierValue() : null;
+      const nativeOverride = codexServiceTierOverrideResult(
+        method,
+        params,
+        threadIdHint,
+        "native",
+        requestedServiceTier
+      );
+      return nativeOverride.fastBlocked || !hasExplicitServiceTier ? nativeOverride : null;
+    }
+    const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierState.serviceTier;
+    const inheritedOverride = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
+    return inheritedOverride.fastBlocked && controlMode === "custom"
+      ? { ...inheritedOverride, threadId, mode: "inherit" }
+      : inheritedOverride.fastBlocked ? inheritedOverride : null;
   }
 
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
@@ -4368,6 +4374,7 @@
       },
       nativeControlState: () => codexNativeServiceTierControlState(),
       openNativeServiceTierMenu: () => codexNativeServiceTierOpenMenu(),
+      toggleFromBadge: () => toggleCodexServiceTierFromBadge(),
       syncServiceTierState: () => {
         syncCodexServiceTierEffectiveState();
         return { ...codexServiceTierState };
