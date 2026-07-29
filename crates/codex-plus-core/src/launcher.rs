@@ -617,33 +617,6 @@ fn start_native_menu_localizer(inspector_port: u16) {
     });
 }
 
-fn start_native_menu_localizer_with_service_tier_preload(
-    inspector_port: u16,
-    preload_path: PathBuf,
-) {
-    if inspector_port == 0 {
-        return;
-    }
-    tokio::spawn(async move {
-        if let Err(error) =
-            crate::native_menu::install_native_menu_localizer_with_service_tier_preload(
-                inspector_port,
-                &preload_path,
-            )
-            .await
-        {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "native_menu.service_tier_preload_failed",
-                serde_json::json!({
-                    "inspector_port": inspector_port,
-                    "preload_path": preload_path.to_string_lossy(),
-                    "message": error.to_string()
-                }),
-            );
-        }
-    });
-}
-
 #[cfg(windows)]
 fn apply_codexplusplus_window_icon_after_launch(process_id: u32) {
     let icon_resource_path =
@@ -981,32 +954,15 @@ impl LaunchHooks for DefaultLaunchHooks {
             );
         }
         let native_menu_inspector_port = Some(select_native_menu_inspector_port(debug_port));
-        let service_tier_preload_path = if cfg!(windows) && settings.enhancements_enabled {
-            Some(
-                crate::service_tier_preload::ensure_service_tier_preload()
-                    .context("failed to prepare Windows service tier preload")?,
-            )
-        } else {
-            None
-        };
         let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);
         if cfg!(windows) {
             let activation = if let Some(inspector_port) = native_menu_inspector_port {
-                if service_tier_preload_path.is_some() {
-                    build_packaged_activation_with_native_menu_bootstrap_inspector(
-                        app_dir,
-                        debug_port,
-                        inspector_port,
-                        &launch_extra_args,
-                    )
-                } else {
-                    build_packaged_activation_with_native_menu_inspector(
-                        app_dir,
-                        debug_port,
-                        inspector_port,
-                        &launch_extra_args,
-                    )
-                }
+                build_packaged_activation_with_native_menu_inspector(
+                    app_dir,
+                    debug_port,
+                    inspector_port,
+                    &launch_extra_args,
+                )
             } else {
                 build_packaged_activation(app_dir, debug_port, &launch_extra_args)
             };
@@ -1022,14 +978,7 @@ impl LaunchHooks for DefaultLaunchHooks {
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
                 apply_codexplusplus_window_icon_after_launch(process_id);
                 if let Some(inspector_port) = native_menu_inspector_port {
-                    if let Some(preload_path) = service_tier_preload_path {
-                        start_native_menu_localizer_with_service_tier_preload(
-                            inspector_port,
-                            preload_path,
-                        );
-                    } else {
-                        start_native_menu_localizer(inspector_port);
-                    }
+                    start_native_menu_localizer(inspector_port);
                 }
                 return Ok(match activation {
                     CodexLaunch::PackagedActivation {
@@ -2147,41 +2096,9 @@ pub fn build_codex_arguments_with_native_menu_inspector(
     inspector_port: u16,
     extra_args: &[String],
 ) -> Vec<String> {
-    build_codex_arguments_with_native_menu_inspector_mode(
-        debug_port,
-        inspector_port,
-        extra_args,
-        false,
-    )
-}
-
-pub fn build_codex_arguments_with_native_menu_bootstrap_inspector(
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> Vec<String> {
-    build_codex_arguments_with_native_menu_inspector_mode(
-        debug_port,
-        inspector_port,
-        extra_args,
-        true,
-    )
-}
-
-fn build_codex_arguments_with_native_menu_inspector_mode(
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-    pause_before_bootstrap: bool,
-) -> Vec<String> {
     let mut args = build_codex_arguments(debug_port, &[]);
     if inspector_port != 0 {
-        let switch = if pause_before_bootstrap {
-            "--inspect-brk"
-        } else {
-            "--inspect"
-        };
-        args.push(format!("{switch}=127.0.0.1:{inspector_port}"));
+        args.push(format!("--inspect=127.0.0.1:{inspector_port}"));
     }
     args.extend(normalize_codex_extra_args(extra_args));
     args
@@ -2241,25 +2158,6 @@ pub fn build_packaged_activation_with_native_menu_inspector(
             inspector_port,
             extra_args,
         )),
-        process_id: None,
-    })
-}
-
-pub fn build_packaged_activation_with_native_menu_bootstrap_inspector(
-    app_dir: &Path,
-    debug_port: u16,
-    inspector_port: u16,
-    extra_args: &[String],
-) -> Option<CodexLaunch> {
-    Some(CodexLaunch::PackagedActivation {
-        app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
-        arguments: command_line_arguments(
-            &build_codex_arguments_with_native_menu_bootstrap_inspector(
-                debug_port,
-                inspector_port,
-                extra_args,
-            ),
-        ),
         process_id: None,
     })
 }

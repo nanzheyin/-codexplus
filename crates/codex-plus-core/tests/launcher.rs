@@ -10,12 +10,11 @@ use codex_plus_core::app_paths::{
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
     build_codex_arguments, build_codex_arguments_for_settings,
-    build_codex_arguments_with_native_menu_bootstrap_inspector,
     build_codex_arguments_with_native_menu_inspector, build_codex_command,
     build_codex_command_with_native_menu_inspector, build_macos_cleanup_command,
     build_macos_open_command, build_macos_open_command_with_native_menu_inspector,
-    build_packaged_activation, build_packaged_activation_with_native_menu_bootstrap_inspector,
-    build_packaged_activation_with_native_menu_inspector, launch_and_inject_with_hooks,
+    build_packaged_activation, build_packaged_activation_with_native_menu_inspector,
+    launch_and_inject_with_hooks,
 };
 #[cfg(windows)]
 use codex_plus_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -463,15 +462,11 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
 }
 
 #[test]
-fn launcher_native_menu_bootstrap_inspector_pauses_before_electron_loads() {
-    assert_eq!(
-        build_codex_arguments_with_native_menu_bootstrap_inspector(9229, 9329, &[]),
-        vec![
-            "--remote-debugging-port=9229".to_string(),
-            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
-            "--inspect-brk=127.0.0.1:9329".to_string(),
-        ]
-    );
+fn launcher_never_pauses_electron_before_bootstrap() {
+    let source = include_str!("../src/launcher.rs");
+
+    assert!(!source.contains("--inspect-brk"));
+    assert!(!source.contains("native_menu_bootstrap_inspector"));
 }
 
 #[test]
@@ -509,22 +504,6 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
             arguments:
                 "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --force_high_performance_gpu"
                     .to_string(),
-            process_id: None,
-        }
-    );
-}
-
-#[test]
-fn launcher_packaged_activation_adds_bootstrap_inspector_argument() {
-    let app_dir = PathBuf::from(
-        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
-    );
-    assert_eq!(
-        build_packaged_activation_with_native_menu_bootstrap_inspector(&app_dir, 9229, 9329, &[])
-            .unwrap(),
-        CodexLaunch::PackagedActivation {
-            app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
-            arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --inspect-brk=127.0.0.1:9329".to_string(),
             process_id: None,
         }
     );
