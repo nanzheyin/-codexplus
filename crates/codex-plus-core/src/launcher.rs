@@ -975,6 +975,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
+                crate::gpu_cache_guard::protect_packaged_gpu_cache_before_launch(app_dir)
+                    .context("failed to protect ChatGPT GPU cache before AppX activation")?;
                 let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
                 apply_codexplusplus_window_icon_after_launch(process_id);
                 if let Some(inspector_port) = native_menu_inspector_port {

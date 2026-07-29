@@ -361,6 +361,19 @@ fn launcher_prepares_projectless_main_window_when_enhancements_are_enabled() {
 }
 
 #[test]
+fn launcher_protects_gpu_cache_before_packaged_app_activation() {
+    let source = include_str!("../src/launcher.rs");
+    let guard = source
+        .find("protect_packaged_gpu_cache_before_launch(app_dir)")
+        .unwrap();
+    let activation = source
+        .find("activate_packaged_app(app_user_model_id, arguments)")
+        .unwrap();
+
+    assert!(guard < activation);
+}
+
+#[test]
 fn launcher_windows_process_wait_uses_platform_cfg_guards() {
     let source = include_str!("../src/launcher.rs").replace("\r\n", "\n");
 
