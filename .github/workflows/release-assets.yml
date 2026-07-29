@@ -82,14 +82,21 @@ jobs:
     outputs:
       release_tag: ${{ needs.prepare-release.outputs.release_tag }}
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_tag }}
+
       - name: Create GitHub Release when missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
         shell: bash
         run: |
+          VERSION="${RELEASE_TAG#v}"
+          node scripts/release/extract-release-notes.mjs "$VERSION" release-notes.md
           if ! gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --repo "${{ github.repository }}" --verify-tag --generate-notes --title "$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" --repo "${{ github.repository }}" --verify-tag --notes-file release-notes.md --title "$RELEASE_TAG"
           fi
 
   windows-installer:
