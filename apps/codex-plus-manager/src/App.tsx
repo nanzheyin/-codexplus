@@ -967,11 +967,14 @@ export function App() {
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
   };
 
-  const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
+  const run = async <T,>(
+    task: () => Promise<T>,
+    options: { silentError?: boolean } = {},
+  ): Promise<T | null> => {
     try {
       return await task();
     } catch (error) {
-      showNotice(t("调用失败"), stringifyError(error), "failed");
+      if (!options.silentError) showNotice(t("调用失败"), stringifyError(error), "failed");
       return null;
     }
   };
@@ -1147,12 +1150,22 @@ export function App() {
       showResultNotice(t("OAuth 登录"), result);
       return result;
     }
-    await openExternalUrl(result.authUrl);
+    const opened = await openExternalUrl(result.authUrl);
+    if (!opened) {
+      return {
+        ...result,
+        status: "failed",
+        message: t("系统浏览器未能打开 OAuth 登录页，请检查默认浏览器后重试。"),
+      };
+    }
     return result;
   };
 
   const pollCodexOAuthLogin = async (loginId: string) => {
-    const result = await run(() => call<OAuthProfileResult>("poll_codex_oauth_login", { loginId }));
+    const result = await run(
+      () => call<OAuthProfileResult>("poll_codex_oauth_login", { loginId }),
+      { silentError: true },
+    );
     if (!result) return null;
     if (result.state === "completed") {
       applyOAuthProfileResult(result);
@@ -2101,11 +2114,11 @@ export function App() {
     }
   };
 
-  const openExternalUrl = async (url: string) => {
+  const openExternalUrl = async (url: string): Promise<boolean> => {
     const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
-    if (result) {
-      showResultNotice(t("打开链接"), result, { silentSuccess: true });
-    }
+    if (!result) return false;
+    showResultNotice(t("打开链接"), result, { silentSuccess: true });
+    return isSuccessStatus(result.status);
   };
 
   const showNotice = (title: string, message: string, status?: Status) => {
@@ -2705,7 +2718,7 @@ type Actions = {
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
-  openExternalUrl: (url: string) => Promise<void>;
+  openExternalUrl: (url: string) => Promise<boolean>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
@@ -2798,29 +2811,33 @@ function OverviewScreen({
   actions: Actions;
 }) {
   const activeProvider = activeRelayProfile(normalizeSettings(form));
+  const usesOfficialAccount = activeProvider.relayMode === "official" && !activeProvider.officialMixApiKey;
+  const usesMixedApiKey = activeProvider.relayMode === "official" && activeProvider.officialMixApiKey;
   const codexDetected = overview?.codex_app.status === "found";
-  const providerReady = activeProvider.relayMode === "official"
+  const providerReady = usesOfficialAccount
     ? relay?.authenticated === true
     : relayProfileSwitchValidation(activeProvider) === null;
   const shortcutInstalled = overview?.silent_shortcut.status === "installed";
   const launched = overview?.latest_launch?.status === "running" || overview?.latest_launch?.status === "running_degraded";
   const repairReady = experienceMode !== "beginner" || sessionRepairCompleted;
   const setupComplete = codexDetected && providerReady && connectionVerified && repairReady && shortcutInstalled && launched;
-  const accountLabel = activeProvider.relayMode === "official"
+  const accountLabel = usesOfficialAccount
     ? relay?.accountLabel || t("官方账号")
-    : activeProvider.name || t("API 服务");
+    : usesMixedApiKey
+      ? `${activeProvider.name || t("API 服务")} · ${t("混入 API Key")}`
+      : activeProvider.name || t("API 服务");
   const modelLabel = rootTomlString(relayFiles?.configContents || "", "model")
     || rootTomlString(activeProvider.configContents, "model")
     || activeProvider.model
     || t("由 Codex 自动选择");
-  const connectionReady = activeProvider.relayMode === "official"
+  const connectionReady = usesOfficialAccount
     ? relay?.authenticated === true
     : relayProfileSwitchValidation(activeProvider) === null;
   const connectionLabel = connectionVerified
     ? t("已验证")
     : connectionReady
-      ? activeProvider.relayMode === "official" ? t("已登录（未测试）") : t("已配置（未测试）")
-      : activeProvider.relayMode === "official" ? t("未登录") : t("配置不完整");
+      ? usesOfficialAccount ? t("已登录（未测试）") : t("已配置（未测试）")
+      : usesOfficialAccount ? t("未登录") : t("配置不完整");
   const setupSteps = [
     {
       title: t("检测 Codex"),
@@ -3646,22 +3663,40 @@ function OAuthProviderDialog({ actions, onClose }: { actions: Actions; onClose: 
   const [state, setState] = useState<"idle" | "pending" | "completed" | "failed">("idle");
   const [message, setMessage] = useState(t("选择 OAuth 凭据来源"));
   const [working, setWorking] = useState(false);
+  const workingRef = useRef(false);
 
   useEffect(() => {
     if (!loginId || state !== "pending") return;
     let cancelled = false;
     let timer = 0;
+    let consecutiveFailures = 0;
     const poll = async () => {
       const result = await actions.pollCodexOAuthLogin(loginId);
-      if (cancelled || !result) return;
+      if (cancelled) return;
+      if (!result) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) {
+          setMessage(t("无法查询 OAuth 登录状态，请重新点击浏览器登录。"));
+          setState("failed");
+          workingRef.current = false;
+          setWorking(false);
+          return;
+        }
+        setMessage(t("暂时无法查询 OAuth 登录状态，正在重试。"));
+        timer = window.setTimeout(() => void poll(), 1200);
+        return;
+      }
+      consecutiveFailures = 0;
       setMessage(result.message);
       if (result.state === "completed") {
         setState("completed");
+        workingRef.current = false;
         setWorking(false);
         return;
       }
       if (result.state === "failed" || !isSuccessStatus(result.status)) {
         setState("failed");
+        workingRef.current = false;
         setWorking(false);
         return;
       }
@@ -3675,6 +3710,8 @@ function OAuthProviderDialog({ actions, onClose }: { actions: Actions; onClose: 
   }, [loginId, state]);
 
   const startBrowserLogin = async () => {
+    if (workingRef.current) return;
+    workingRef.current = true;
     setWorking(true);
     setState("pending");
     setMessage(t("正在打开浏览器登录"));
@@ -3682,6 +3719,7 @@ function OAuthProviderDialog({ actions, onClose }: { actions: Actions; onClose: 
     if (!result || !isSuccessStatus(result.status) || !result.loginId) {
       setState("failed");
       setMessage(result?.message || t("OAuth 登录启动失败"));
+      workingRef.current = false;
       setWorking(false);
       return;
     }
@@ -3690,9 +3728,12 @@ function OAuthProviderDialog({ actions, onClose }: { actions: Actions; onClose: 
   };
 
   const importLocal = async () => {
+    if (workingRef.current) return;
+    workingRef.current = true;
     setWorking(true);
     setMessage(t("正在读取本机 config.toml / auth.json"));
     const result = await actions.importLocalCodexOAuth();
+    workingRef.current = false;
     setWorking(false);
     if (!result) {
       setState("failed");

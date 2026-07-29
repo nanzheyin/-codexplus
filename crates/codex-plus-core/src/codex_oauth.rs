@@ -65,19 +65,33 @@ fn oauth_session() -> &'static Mutex<Option<OAuthSession>> {
     SESSION.get_or_init(|| Mutex::new(None))
 }
 
+fn oauth_start_lock() -> &'static tokio::sync::Mutex<()> {
+    static START_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    START_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub async fn start_oauth_login() -> anyhow::Result<OAuthLoginStart> {
+    start_oauth_login_on_port(CALLBACK_PORT).await
+}
+
+async fn start_oauth_login_on_port(callback_port: u16) -> anyhow::Result<OAuthLoginStart> {
+    let _start_guard = oauth_start_lock().lock().await;
     if let Some(existing) = current_pending_login() {
         return Ok(existing);
     }
 
-    let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+    let listener = TcpListener::bind(("127.0.0.1", callback_port))
         .await
-        .with_context(|| format!("OAuth 回调端口 {CALLBACK_PORT} 已被占用"))?;
+        .with_context(|| format!("OAuth 回调端口 {callback_port} 已被占用"))?;
+    let callback_port = listener
+        .local_addr()
+        .context("读取 OAuth 回调端口失败")?
+        .port();
     let login_id = random_token();
     let state = random_token();
     let code_verifier = format!("{}{}", random_token(), random_token());
     let code_challenge = pkce_challenge(&code_verifier);
-    let redirect_uri = format!("http://localhost:{CALLBACK_PORT}/auth/callback");
+    let redirect_uri = format!("http://localhost:{callback_port}/auth/callback");
     let auth_url = build_authorization_url(&redirect_uri, &code_challenge, &state)?;
     let expires_at = unix_timestamp().saturating_add(LOGIN_TIMEOUT.as_secs());
     let session = OAuthSession {
@@ -92,6 +106,7 @@ pub async fn start_oauth_login() -> anyhow::Result<OAuthLoginStart> {
 
     tokio::spawn(run_callback_listener(
         listener,
+        callback_port,
         login_id.clone(),
         state,
         code_verifier,
@@ -279,6 +294,7 @@ fn current_pending_login() -> Option<OAuthLoginStart> {
 
 async fn run_callback_listener(
     listener: TcpListener,
+    callback_port: u16,
     login_id: String,
     expected_state: String,
     code_verifier: String,
@@ -294,7 +310,7 @@ async fn run_callback_listener(
                 .next()
                 .and_then(|line| line.split_whitespace().nth(1))
                 .unwrap_or("/");
-            let callback = Url::parse(&format!("http://localhost:{CALLBACK_PORT}{target}"));
+            let callback = Url::parse(&format!("http://localhost:{callback_port}{target}"));
             let Ok(callback) = callback else {
                 write_callback_response(&mut stream, 400, "授权回调地址无效").await;
                 continue;
@@ -319,7 +335,7 @@ async fn run_callback_listener(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .context("OAuth 回调缺少 code")?;
-            let tokens = exchange_authorization_code(&code, &code_verifier).await?;
+            let tokens = exchange_authorization_code(&code, &code_verifier, callback_port).await?;
             write_callback_response(&mut stream, 200, "Codex OAuth 授权完成，可以关闭此页面").await;
             return Ok::<_, anyhow::Error>(tokens);
         }
@@ -358,8 +374,9 @@ async fn write_callback_response(stream: &mut tokio::net::TcpStream, status: u16
 async fn exchange_authorization_code(
     code: &str,
     code_verifier: &str,
+    callback_port: u16,
 ) -> anyhow::Result<CodexOAuthTokens> {
-    let redirect_uri = format!("http://localhost:{CALLBACK_PORT}/auth/callback");
+    let redirect_uri = format!("http://localhost:{callback_port}/auth/callback");
     let response = reqwest::Client::new()
         .post(TOKEN_ENDPOINT)
         .form(&[
@@ -582,5 +599,26 @@ mod tests {
         assert_eq!(profile.name, "stable@example.com");
         assert_eq!(profile.relay_mode, RelayMode::Official);
         assert!(is_oauth_profile(&profile));
+    }
+
+    #[tokio::test]
+    async fn concurrent_oauth_starts_reuse_pending_session() {
+        *oauth_session()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let start_guard = oauth_start_lock().lock().await;
+        let first = tokio::spawn(start_oauth_login_on_port(0));
+        let second = tokio::spawn(start_oauth_login_on_port(0));
+
+        tokio::task::yield_now().await;
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+        drop(start_guard);
+
+        let first = first.await.unwrap().unwrap();
+        let second = second.await.unwrap().unwrap();
+
+        assert_eq!(first, second);
+        clear_oauth_login(&first.login_id);
     }
 }

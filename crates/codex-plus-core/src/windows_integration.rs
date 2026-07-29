@@ -5,6 +5,8 @@ use std::iter::once;
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::sync::OnceLock;
@@ -24,9 +26,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ,
-    RegCloseKey, RegCreateKeyW, RegDeleteKeyW, RegDeleteValueW, RegEnumValueW, RegOpenKeyExW,
-    RegSetValueExW,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE,
+    REG_EXPAND_SZ, REG_SZ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyW,
+    RegDeleteKeyW, RegDeleteValueW, RegEnumValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
@@ -44,7 +46,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
+    EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL,
     SetForegroundWindow, ShowWindow,
 };
 #[cfg(windows)]
@@ -162,14 +164,131 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
             PCWSTR(file.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
-            SW_SHOWMINNOACTIVE,
+            SW_SHOWNORMAL,
         )
     };
     let code = result.0 as isize;
-    if code <= 32 {
-        anyhow::bail!("ShellExecuteW returned {code}");
+    if code > 32 {
+        return Ok(());
     }
+
+    let browser = registered_url_executable(url).map_err(|error| {
+        anyhow::anyhow!("ShellExecuteW returned {code}; 从注册表读取默认浏览器失败：{error:#}")
+    })?;
+    std::process::Command::new(&browser)
+        .arg(url)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "ShellExecuteW returned {code}; 启动 {} 失败",
+                browser.display()
+            )
+        })?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn registered_url_executable(url: &str) -> anyhow::Result<PathBuf> {
+    let scheme = url
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+        .filter(|scheme| matches!(*scheme, "http" | "https"))
+        .context("只支持查询 http 或 https 默认程序")?;
+
+    let user_choice_key = format!(
+        "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\{scheme}\\UserChoice"
+    );
+    let prog_id = read_registry_string_value(HKEY_CURRENT_USER, &user_choice_key, "ProgId")?;
+    let handler_command = match prog_id.as_deref() {
+        Some(prog_id) if !prog_id.trim().is_empty() => {
+            let command_key = format!("{}\\shell\\open\\command", prog_id.trim());
+            read_registry_string_value(HKEY_CLASSES_ROOT, &command_key, "")?
+        }
+        _ => None,
+    }
+    .or_else(|| {
+        let command_key = format!("{scheme}\\shell\\open\\command");
+        read_registry_string_value(HKEY_CLASSES_ROOT, &command_key, "")
+            .ok()
+            .flatten()
+    })
+    .with_context(|| format!("Windows 注册表没有 {scheme} 浏览器启动命令"))?;
+
+    let executable = shell_command_executable(&handler_command)?;
+    anyhow::ensure!(executable.is_absolute(), "默认浏览器路径不是绝对路径");
+    anyhow::ensure!(
+        executable.is_file(),
+        "默认浏览器不存在：{}",
+        executable.display()
+    );
+    Ok(executable)
+}
+
+#[cfg(windows)]
+fn read_registry_string_value(
+    root: HKEY,
+    subkey: &str,
+    value_name: &str,
+) -> anyhow::Result<Option<String>> {
+    let subkey = wide_null(subkey);
+    let value_name = wide_null(value_name);
+    let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ;
+    let mut byte_len = 0_u32;
+    let result = unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(value_name.as_ptr()),
+            flags,
+            None,
+            None,
+            Some(&mut byte_len),
+        )
+    };
+    if result.is_err() {
+        return Ok(None);
+    }
+    if byte_len == 0 {
+        return Ok(Some(String::new()));
+    }
+
+    let mut buffer = vec![0_u16; (byte_len as usize).div_ceil(2)];
+    unsafe {
+        RegGetValueW(
+            root,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(value_name.as_ptr()),
+            flags,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut byte_len),
+        )
+    }
+    .ok()
+    .with_context(|| format!("读取注册表键 {subkey:?} 失败"))?;
+    Ok(Some(nul_terminated_wide_to_string(&buffer)))
+}
+
+#[cfg(windows)]
+fn shell_command_executable(command: &str) -> anyhow::Result<PathBuf> {
+    let command = command.trim_start();
+    anyhow::ensure!(!command.is_empty(), "默认浏览器启动命令为空");
+    let executable = if let Some(quoted) = command.strip_prefix('"') {
+        quoted
+            .split_once('"')
+            .map(|(path, _)| path)
+            .context("默认浏览器启动命令缺少结束引号")?
+    } else {
+        let lower = command.to_ascii_lowercase();
+        let end = lower
+            .find(".exe")
+            .map(|index| index + 4)
+            .or_else(|| command.find(char::is_whitespace))
+            .unwrap_or(command.len());
+        &command[..end]
+    };
+    Ok(PathBuf::from(executable.trim()))
 }
 
 #[cfg(windows)]
@@ -608,5 +727,35 @@ struct RegistryKeyGuard(HKEY);
 impl Drop for RegistryKeyGuard {
     fn drop(&mut self) {
         let _ = unsafe { RegCloseKey(self.0) };
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::shell_command_executable;
+
+    #[test]
+    fn parses_quoted_browser_command() {
+        let executable = shell_command_executable(
+            r#""C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            executable,
+            std::path::PathBuf::from(
+                r#"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"#
+            )
+        );
+    }
+
+    #[test]
+    fn parses_unquoted_browser_command() {
+        let executable = shell_command_executable(r#"C:\Browsers\browser.EXE -- "%1""#).unwrap();
+
+        assert_eq!(
+            executable,
+            std::path::PathBuf::from(r#"C:\Browsers\browser.EXE"#)
+        );
     }
 }
