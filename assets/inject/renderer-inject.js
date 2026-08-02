@@ -4396,6 +4396,9 @@
       },
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
       settingStorageFromModule: codexSettingStorageFromModule,
+      composerContainsSidebar: (composer) => codexServiceTierComposerContainsSidebar(composer),
+      composerHasTextInput: (composer) => codexServiceTierComposerHasTextInput(composer),
+      badgePlacementStaysInComposer: (composer, placement) => codexServiceTierBadgePlacementStaysInComposer(composer, placement),
     };
     return;
   }
@@ -7767,7 +7770,17 @@
       const composer = codexServiceTierComposerFromTextInput(input);
       if (composer) candidates.add(composer);
     });
-    return Array.from(candidates);
+    return Array.from(candidates).filter((composer) =>
+      codexServiceTierComposerHasTextInput(composer) && !codexServiceTierComposerContainsSidebar(composer)
+    );
+  }
+
+  function codexServiceTierComposerHasTextInput(composer) {
+    return !!composer?.querySelector?.("textarea, [contenteditable='true'], [role='textbox']");
+  }
+
+  function codexServiceTierComposerContainsSidebar(composer) {
+    return !!composer?.matches?.(selectors.sidebarThread) || !!composer?.querySelector?.(selectors.sidebarThread);
   }
 
   function codexServiceTierBestComposerFooter(root = document) {
@@ -7801,7 +7814,7 @@
 
   function codexServiceTierComposerFooter(composer) {
     if (composer?.matches?.(".composer-footer")) return composer;
-    return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
+    return codexServiceTierBestComposerFooter(composer) || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
@@ -7824,9 +7837,15 @@
     if (modelPlacement?.parent) return modelPlacement;
     const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
     if (group) return { parent: group, before: group.firstChild };
-    const globalModelPlacement = codexServiceTierModelButtonPlacement(document);
-    if (globalModelPlacement?.parent) return globalModelPlacement;
     return null;
+  }
+
+  function codexServiceTierBadgePlacementStaysInComposer(composer, placement) {
+    const parent = placement?.parent;
+    return !!composer && !!parent &&
+      !parent.closest?.(selectors.sidebarThread) &&
+      !codexServiceTierComposerContainsSidebar(parent) &&
+      (parent === composer || composer.contains?.(parent));
   }
 
   function wireCodexServiceTierBadge(badge) {
@@ -7857,7 +7876,7 @@
     const composer = codexServiceTierFindComposerEl();
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
-    if (!composer || !placement?.parent) {
+    if (!codexServiceTierBadgePlacementStaysInComposer(composer, placement)) {
       existingBadges.forEach((badge) => badge.remove());
       return;
     }

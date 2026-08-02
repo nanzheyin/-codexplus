@@ -737,6 +737,9 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierBestComposerFooter"));
     assert!(script.contains("codexServiceTierComposerCandidates"));
     assert!(script.contains("codexServiceTierComposerScore"));
+    assert!(script.contains("codexServiceTierComposerHasTextInput(composer) && !codexServiceTierComposerContainsSidebar(composer)"));
+    assert!(script.contains("codexServiceTierBadgePlacementStaysInComposer(composer, placement)"));
+    assert!(!script.contains("const globalModelPlacement ="));
     assert!(script.contains("[contenteditable='true']"));
     assert!(script.contains("[role='textbox']"));
     assert!(script.contains("data-codex-service-tier-badge"));
@@ -914,6 +917,10 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
     assert_eq!(cases["degradedBadge"]["tier"], "standard");
     assert_eq!(cases["degradedBadge"]["label"], "标准");
+    assert_eq!(cases["composerContainsSidebar"], true);
+    assert_eq!(cases["composerHasTextInput"], true);
+    assert_eq!(cases["composerPlacementAllowed"], true);
+    assert_eq!(cases["sidebarPlacementRejected"], true);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -998,6 +1005,18 @@ const api = window.__codexPlusServiceTierTest;
 api.setBackendReady();
 api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
+const composerChild = node();
+const composer = node();
+composer.contains = (candidate) => candidate === composerChild;
+composer.querySelector = (selector) => selector.includes("contenteditable") ? composerChild : null;
+const sidebarRow = node();
+sidebarRow.closest = (selector) => selector.includes("data-app-action-sidebar-thread-id") ? sidebarRow : null;
+const sidebarContainer = node();
+sidebarContainer.querySelector = (selector) => selector.includes("data-app-action-sidebar-thread-id") ? sidebarRow : null;
+const composerContainsSidebar = api.composerContainsSidebar(sidebarContainer);
+const composerHasTextInput = api.composerHasTextInput(composer);
+const composerPlacementAllowed = api.badgePlacementStaysInComposer(composer, {{ parent: composerChild }});
+const sidebarPlacementRejected = !api.badgePlacementStaysInComposer(composer, {{ parent: sidebarRow }});
 
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const supportedFast = api.applyServiceTierOverride("turn/start", {{
@@ -1208,6 +1227,10 @@ setTimeout(() => process.stdout.write(JSON.stringify({{
   nativeMenuClicksBeforeLocalToggle,
   nativeMenuClicksAfterLocalToggle,
   degradedBadge,
+  composerContainsSidebar,
+  composerHasTextInput,
+  composerPlacementAllowed,
+  sidebarPlacementRejected,
 }})), 20);
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
