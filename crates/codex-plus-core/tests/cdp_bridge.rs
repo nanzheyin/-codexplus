@@ -1269,6 +1269,8 @@ fn injection_script_applies_projectless_main_window_contract() {
     assert_eq!(cases["genericEnabled"], true);
     assert_eq!(cases["explicitProjectWins"], false);
     assert_eq!(cases["disabledIsNoop"], false);
+    assert_eq!(cases["projectMoveRows"], 1);
+    assert_eq!(cases["projectMoveKeptNative"], true);
 }
 
 fn run_projectless_main_window_contract_harness() -> serde_json::Value {
@@ -1350,9 +1352,25 @@ const explicitProjectWins = api.shouldEnforce();
 api.setEnabled(false);
 api.setIntent("generic", "test");
 const disabledIsNoop = api.shouldEnforce();
+function sessionRow(projected) {{
+  const row = node();
+  row.textContent = "Duplicate session";
+  row.dataset = projected ? {{ codexProjectMoveTargetKind: "project" }} : {{}};
+  row.getAttribute = (name) => name === "data-app-action-sidebar-thread-id" ? "local:duplicate-session" : null;
+  row.closest = (selector) => selector === '[role="listitem"]' ? row : null;
+  row.remove = () => {{ row.isConnected = false; }};
+  return row;
+}}
+const projectMoveRows = [sessionRow(true), sessionRow(false)];
+document.querySelectorAll = (selector) => selector.includes("data-app-action-sidebar-thread-id")
+  ? projectMoveRows.filter((row) => row.isConnected)
+  : [];
+window.__codexProjectMoveApplyProjection();
+const projectMoveKeptNative = projectMoveRows[1].isConnected && !projectMoveRows[0].isConnected;
 process.stdout.write(JSON.stringify({{
   englishNewTask, chineseNewTask, compactChineseNewTask, quickChat, explicitProject, projectRow, unrelated,
   genericEnabled, explicitProjectWins, disabledIsNoop,
+  projectMoveRows: projectMoveRows.filter((row) => row.isConnected).length, projectMoveKeptNative,
 }}));
 process.exit(0);
 "#,

@@ -5550,24 +5550,29 @@
     const targetRowsById = new Map();
     const settledRefs = [];
     const now = Date.now();
-    const rows = sessionRows(true);
+    const rowsById = new Map();
+    const rows = sessionRows(true).filter((row) => {
+      const rowId = projectMoveSessionKey(sessionRefFromRow(row).session_id);
+      const existingRow = rowsById.get(rowId);
+      if (!rowId || !existingRow) {
+        if (rowId) rowsById.set(rowId, row);
+        return true;
+      }
+      if (rowProjectionKind(existingRow) && !rowProjectionKind(row)) {
+        rowListItem(existingRow).remove();
+        rowsById.set(rowId, row);
+        return true;
+      }
+      rowListItem(row).remove();
+      return false;
+    });
     rows.forEach((row) => {
       const ref = sessionRefFromRow(row);
       const target = projectionForSessionId(ref.session_id, projection);
       if (target && rowIsUnderTarget(row, target)) {
         const rowId = projectMoveSessionKey(ref.session_id);
         const hadProjectionKind = !!rowProjectionKind(row);
-        const existingRow = targetRowsById.get(rowId);
-        if (existingRow && existingRow !== row) {
-          const existingIsProjection = !!rowProjectionKind(existingRow);
-          const currentIsProjection = !!rowProjectionKind(row);
-          const rowToRemove = existingIsProjection && !currentIsProjection ? existingRow : row;
-          rowListItem(rowToRemove).remove();
-          if (rowToRemove === existingRow) targetRowsById.set(rowId, row);
-          if (rowToRemove === row) return;
-        } else {
-          targetRowsById.set(rowId, row);
-        }
+        targetRowsById.set(rowId, row);
         if (!hadProjectionKind && typeof target.at === "number" && now - target.at > projectMoveProjectionSettleMs) settledRefs.push(ref);
         const moved = target.targetKind === "projectless" ? moveRowToChats(row, target) : moveRowToProjectList(row, target);
         if (moved) targetRowsById.set(rowId, row);
