@@ -3202,12 +3202,24 @@
     return archivePageHintVisible() && archivedRows().length > 0;
   }
 
+  function reactConversationIdFromRow(row) {
+    const reactKey = reactFiberKeys(row).find((key) => !key.startsWith("__reactProps"));
+    let fiber = reactKey ? row[reactKey] : null;
+    for (let depth = 0; fiber && depth < 20; depth += 1, fiber = fiber.return) {
+      const props = fiber.memoizedProps || fiber.pendingProps || {};
+      const conversationId = props.conversationId || props.entry?.conversationId;
+      if (typeof conversationId === "string" && conversationId.trim()) return conversationId.trim();
+    }
+    return "";
+  }
+
   function sessionRefFromRow(row) {
     const href = row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
     const idMatch = href.match(/(?:session|conversation|thread)[=/:-]([A-Za-z0-9_.-]+)/i) || href.match(/([A-Za-z0-9_-]{8,})$/);
     const codexThreadId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
     const fallbackId = row.getAttribute("data-session-id") || row.getAttribute("data-testid") || "";
-    const sessionId = codexThreadId || (idMatch && idMatch[1]) || fallbackId;
+    const conversationId = codexThreadId.includes("client-new-thread:") ? reactConversationIdFromRow(row) : "";
+    const sessionId = conversationId || codexThreadId || (idMatch && idMatch[1]) || fallbackId;
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
@@ -5640,6 +5652,22 @@
     return Array.from(list.children).map(threadRowFromListItem).filter(Boolean).filter((row) => rowIsInChats(row));
   }
 
+  function visibleSidebarSortGroups() {
+    const groups = [];
+    const chatsRows = visibleChatsRows();
+    if (chatsRows.length) groups.push({ list: chatsThreadList(), rows: chatsRows });
+    const projectRowsByList = new Map();
+    sessionRows(true).forEach((row) => {
+      if (!row.closest?.('[data-app-action-sidebar-section-heading="Projects"]')) return;
+      const list = rowListItem(row).parentElement;
+      if (!list) return;
+      if (!projectRowsByList.has(list)) projectRowsByList.set(list, []);
+      projectRowsByList.get(list).push(row);
+    });
+    projectRowsByList.forEach((rows, list) => groups.push({ list, rows }));
+    return groups;
+  }
+
   function chatsSortNeedsCorrection(rows) {
     let previousPinned = true;
     let previousSortMs = Infinity;
@@ -5663,8 +5691,7 @@
     return false;
   }
 
-  function reorderChatsRows(rows) {
-    const list = chatsThreadList();
+  function reorderThreadRows(list, rows) {
     if (!list || rows.length < 2) return;
     const rowItems = new Set(rows.map(rowListItem));
     const firstNonThreadItem = Array.from(list.children).find((child) => !rowItems.has(child) && !threadRowFromListItem(child));
@@ -5685,8 +5712,9 @@
 
   async function applyChatsSortCorrection() {
     if (!codexPlusSettings().projectMove || chatsSortInFlight) return;
-    const rows = visibleChatsRows();
-    if (rows.length < 2) return;
+    const groups = visibleSidebarSortGroups();
+    const rows = groups.flatMap((group) => group.rows);
+    if (!groups.some((group) => group.rows.length > 1)) return;
     const refs = rows.map(sessionRefFromRow).filter((ref) => ref.session_id);
     const signature = refs.map((ref) => projectMoveSessionKey(ref.session_id)).join("|");
     const allRowsHaveSortMs = rows.every((row) => numericTimestamp(row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs));
@@ -5711,11 +5739,13 @@
           const sortMs = trustedSortMs || sortMsForSession(ref.session_id, row.dataset.codexProjectMoveSortMs || rowListItem(row).dataset.codexProjectMoveSortMs);
           row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
           rowListItem(row).dataset.codexProjectMoveSortMs = String(sortMs || 0);
-          if (trustedSortMs) updateRowTimeLabel(row, trustedSortMs);
+          if (trustedSortMs && rowIsInChats(row)) updateRowTimeLabel(row, trustedSortMs);
         });
       }
-      if (chatsSortNeedsCorrection(rows)) reorderChatsRows(rows);
-      chatsSortSignature = visibleChatsRows().map((row) => projectMoveSessionKey(sessionRefFromRow(row).session_id)).join("|");
+      groups.forEach((group) => {
+        if (chatsSortNeedsCorrection(group.rows)) reorderThreadRows(group.list, group.rows);
+      });
+      chatsSortSignature = visibleSidebarSortGroups().flatMap((group) => group.rows).map((row) => projectMoveSessionKey(sessionRefFromRow(row).session_id)).join("|");
     } finally {
       chatsSortInFlight = false;
     }

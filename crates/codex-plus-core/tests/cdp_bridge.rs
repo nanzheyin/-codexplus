@@ -1271,6 +1271,7 @@ fn injection_script_applies_projectless_main_window_contract() {
     assert_eq!(cases["disabledIsNoop"], false);
     assert_eq!(cases["projectMoveRows"], 1);
     assert_eq!(cases["projectMoveKeptNative"], true);
+    assert_eq!(cases["projectSortOrder"], json!(["running-new", "new", "old"]));
 }
 
 fn run_projectless_main_window_contract_harness() -> serde_json::Value {
@@ -1367,12 +1368,49 @@ document.querySelectorAll = (selector) => selector.includes("data-app-action-sid
   : [];
 window.__codexProjectMoveApplyProjection();
 const projectMoveKeptNative = projectMoveRows[1].isConnected && !projectMoveRows[0].isConnected;
-process.stdout.write(JSON.stringify({{
-  englishNewTask, chineseNewTask, compactChineseNewTask, quickChat, explicitProject, projectRow, unrelated,
-  genericEnabled, explicitProjectWins, disabledIsNoop,
-  projectMoveRows: projectMoveRows.filter((row) => row.isConnected).length, projectMoveKeptNative,
-}}));
-process.exit(0);
+function sortableRow(label, id, conversationId, running = false) {{
+  const row = node();
+  row.label = label;
+  row.getAttribute = (name) => {{
+    if (name === "data-app-action-sidebar-thread-id") return id;
+    if (name === "data-app-action-sidebar-thread-pinned") return "false";
+    if (name === "data-app-action-sidebar-thread-kind" || name === "data-app-action-sidebar-thread-host-id") return "local";
+    return null;
+  }};
+  row.matches = (selector) => selector.includes("data-app-action-sidebar-thread-id");
+  row.querySelector = (selector) => selector.includes("animate-spin") && running ? {{}} : null;
+  row.closest = (selector) => {{
+    if (selector === '[role="listitem"]') return row;
+    if (selector.includes('sidebar-section-heading="Projects"')) return {{}};
+    return null;
+  }};
+  if (conversationId) row["__reactFiber$test"] = {{ memoizedProps: {{ conversationId }}, return: null }};
+  return row;
+}}
+const projectSortList = {{
+  children: [
+    sortableRow("old", "local:019f0000-0000-7000-8000-000000000000", ""),
+    sortableRow("new", "local:client-new-thread:test", "019f2000-0000-7000-8000-000000000000"),
+    sortableRow("running-new", "local:client-new-thread:running", "019f3000-0000-7000-8000-000000000000", true),
+  ],
+  insertBefore(item, before) {{
+    this.children = this.children.filter((child) => child !== item);
+    const index = before ? this.children.indexOf(before) : this.children.length;
+    this.children.splice(index < 0 ? this.children.length : index, 0, item);
+  }},
+}};
+projectSortList.children.forEach((row) => {{ row.parentElement = projectSortList; }});
+document.querySelectorAll = (selector) => selector.includes("data-app-action-sidebar-thread-id") ? projectSortList.children : [];
+window.__codexSessionDeleteBridge = async () => ({{ status: "ok", sort_keys: [] }});
+window.__codexProjectMoveSortChats().then(() => {{
+  process.stdout.write(JSON.stringify({{
+    englishNewTask, chineseNewTask, compactChineseNewTask, quickChat, explicitProject, projectRow, unrelated,
+    genericEnabled, explicitProjectWins, disabledIsNoop,
+    projectMoveRows: projectMoveRows.filter((row) => row.isConnected).length, projectMoveKeptNative,
+    projectSortOrder: projectSortList.children.map((row) => row.label),
+  }}));
+  process.exit(0);
+}}).catch((error) => {{ console.error(error); process.exit(1); }});
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
