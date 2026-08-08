@@ -439,7 +439,7 @@
   const selectors = {
     sidebarThread: "[data-app-action-sidebar-thread-id]",
     threadTitle: "[data-thread-title]",
-    appHeader: ".app-header-tint",
+    appHeader: ".app-header-tint, header[data-app-shell-application-menu-bar=\"true\"]",
     nativeMenuBar: "[class*=\"ms-auto\"][class*=\"flex\"][class*=\"items-center\"]",
     headerContextMenuSurface: '[data-testid="app-shell-header-context-menu-surface"]',
     archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
@@ -5430,14 +5430,31 @@
     return row?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true" || rowListItem(row)?.getAttribute?.("data-app-action-sidebar-thread-pinned") === "true";
   }
 
+  function rowIsRunning(row) {
+    return !!row?.querySelector?.(".animate-spin");
+  }
+
+  function compareThreadRows(left, right) {
+    const leftPinned = rowPinned(left);
+    const rightPinned = rowPinned(right);
+    if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+    const leftRunning = rowIsRunning(left);
+    const rightRunning = rowIsRunning(right);
+    if (leftRunning !== rightRunning) return leftRunning ? -1 : 1;
+    const leftRef = sessionRefFromRow(left);
+    const rightRef = sessionRefFromRow(right);
+    const leftSortMs = rowSortMs(left, leftRef);
+    const rightSortMs = rowSortMs(right, rightRef);
+    if (leftSortMs !== rightSortMs) return rightSortMs - leftSortMs;
+    return projectMoveSessionKey(rightRef.session_id).localeCompare(projectMoveSessionKey(leftRef.session_id));
+  }
+
   function insertRowItemByTime(list, item, row, target) {
     const ref = sessionRefFromRow(row);
     const sortMs = rowSortMs(row, ref, target);
     item.dataset.codexProjectMoveSortMs = String(sortMs || 0);
     row.dataset.codexProjectMoveSortMs = String(sortMs || 0);
     if (target?.sortMsTrusted) updateRowTimeLabel(row, sortMs);
-    const pinned = rowPinned(row);
-    const sessionKey = projectMoveSessionKey(ref.session_id);
     const existingItems = Array.from(list.children).filter((child) => child !== item);
     let firstNonThreadItem = null;
     for (const child of existingItems) {
@@ -5446,16 +5463,7 @@
         firstNonThreadItem = firstNonThreadItem || child;
         continue;
       }
-      const childPinned = rowPinned(childRow);
-      if (childPinned && !pinned) continue;
-      if (!childPinned && pinned) {
-        list.insertBefore(item, child);
-        return;
-      }
-      const childRef = sessionRefFromRow(childRow);
-      const childSortMs = rowSortMs(childRow, childRef);
-      const childKey = projectMoveSessionKey(childRef.session_id);
-      if (sortMs > childSortMs || (sortMs === childSortMs && sessionKey > childKey)) {
+      if (compareThreadRows(row, childRow) < 0) {
         list.insertBefore(item, child);
         return;
       }
@@ -5669,43 +5677,14 @@
   }
 
   function chatsSortNeedsCorrection(rows) {
-    let previousPinned = true;
-    let previousSortMs = Infinity;
-    let previousKey = "\uffff";
-    for (const row of rows) {
-      const pinned = rowPinned(row);
-      const ref = sessionRefFromRow(row);
-      const sortMs = rowSortMs(row, ref);
-      const key = projectMoveSessionKey(ref.session_id);
-      if (previousPinned && !pinned) {
-        previousPinned = false;
-        previousSortMs = sortMs;
-        previousKey = key;
-        continue;
-      }
-      if (!previousPinned && pinned) return true;
-      if (sortMs > previousSortMs || (sortMs === previousSortMs && key > previousKey)) return true;
-      previousSortMs = sortMs;
-      previousKey = key;
-    }
-    return false;
+    return rows.some((row, index) => index > 0 && compareThreadRows(rows[index - 1], row) > 0);
   }
 
   function reorderThreadRows(list, rows) {
     if (!list || rows.length < 2) return;
     const rowItems = new Set(rows.map(rowListItem));
     const firstNonThreadItem = Array.from(list.children).find((child) => !rowItems.has(child) && !threadRowFromListItem(child));
-    const orderedRows = [...rows].sort((left, right) => {
-      const leftPinned = rowPinned(left);
-      const rightPinned = rowPinned(right);
-      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
-      const leftRef = sessionRefFromRow(left);
-      const rightRef = sessionRefFromRow(right);
-      const leftSortMs = rowSortMs(left, leftRef);
-      const rightSortMs = rowSortMs(right, rightRef);
-      if (leftSortMs !== rightSortMs) return rightSortMs - leftSortMs;
-      return projectMoveSessionKey(rightRef.session_id).localeCompare(projectMoveSessionKey(leftRef.session_id));
-    });
+    const orderedRows = [...rows].sort(compareThreadRows);
     orderedRows.forEach((row) => list.insertBefore(rowListItem(row), firstNonThreadItem || null));
     cachedSessionRowsAt = 0;
   }

@@ -772,6 +772,7 @@ fn injection_script_keeps_native_menu_placement_always_enabled() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("function findNativeMenuInsertionPoint()"));
+    assert!(script.contains("data-app-shell-application-menu-bar"));
     assert!(!script.contains("data-codex-plus-setting=\"nativeMenuPlacement\""));
     assert!(!script.contains("if (!codexPlusSettings().nativeMenuPlacement) return null;"));
     assert!(!script.contains("nativeMenuPlacement: \"codexAppNativeMenuPlacement\""));
@@ -1391,7 +1392,7 @@ const projectSortList = {{
   children: [
     sortableRow("old", "local:019f0000-0000-7000-8000-000000000000", ""),
     sortableRow("new", "local:client-new-thread:test", "019f2000-0000-7000-8000-000000000000"),
-    sortableRow("running-new", "local:client-new-thread:running", "019f3000-0000-7000-8000-000000000000", true),
+    sortableRow("running-new", "local:client-new-thread:running", "019ed000-0000-7000-8000-000000000000", true),
   ],
   insertBefore(item, before) {{
     this.children = this.children.filter((child) => child !== item);
