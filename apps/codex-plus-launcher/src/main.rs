@@ -714,25 +714,6 @@ async fn inject_with_context(
     ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
-    let mut last_error = None;
-    for _ in 0..20 {
-        match try_inject_with_context(debug_port, helper_port, ctx.clone(), runtime.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
-}
-
-async fn try_inject_with_context(
-    debug_port: u16,
-    helper_port: u16,
-    ctx: BridgeContext,
-    runtime: Arc<LauncherRuntimeService>,
-) -> anyhow::Result<()> {
     let _install_guard = runtime.bridge_install_lock.lock().await;
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
     let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
@@ -846,6 +827,8 @@ mod tests {
         assert!(source.contains("let ctx = self.bridge_context_for(debug_port, app_dir);"));
         assert!(source.contains(".start_bridge_watchdog_with_reinjector"));
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
+        let nested_retry = ["try_inject_with_", "context"].concat();
+        assert!(!source.contains(&nested_retry));
     }
 
     #[test]

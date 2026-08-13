@@ -25,6 +25,7 @@ static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
 const BRIDGE_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const BRIDGE_WATCHDOG_MAX_BACKOFF_SECONDS: u64 = 60;
+const BRIDGE_WATCHDOG_TARGET_MISS_LIMIT: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexLaunch {
@@ -776,17 +777,43 @@ impl DefaultLaunchHooks {
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut interval = tokio::time::interval(BRIDGE_WATCHDOG_INTERVAL);
             let mut consecutive_bridge_failures = 0u32;
+            let mut consecutive_target_misses = 0u32;
             let mut next_bridge_check_at = Instant::now();
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
+                        let target = match crate::cdp::list_targets(debug_port)
+                            .await
+                            .and_then(|targets| crate::cdp::pick_injectable_codex_page_target(&targets))
+                        {
+                            Ok(target) => {
+                                bridge_watchdog_should_stop(&mut consecutive_target_misses, true);
+                                target
+                            }
+                            Err(error) => {
+                                if bridge_watchdog_should_stop(&mut consecutive_target_misses, false) {
+                                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                                        "bridge.watchdog_target_gone",
+                                        serde_json::json!({
+                                            "debug_port": debug_port,
+                                            "helper_port": helper_port,
+                                            "consecutive_misses": consecutive_target_misses,
+                                            "message": error.to_string()
+                                        }),
+                                    );
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
                         let (pet_result, bridge_outcome) = if Instant::now() >= next_bridge_check_at {
                             let (pet_result, bridge_outcome) = tokio::join!(
                                 sync_pet_real_mouse_overlay(debug_port, helper_port),
                                 check_and_reinject_bridge_with(
                                     debug_port,
                                     helper_port,
+                                    &target,
                                     &reinject,
                                 ),
                             );
@@ -1125,7 +1152,7 @@ impl LaunchHooks for DefaultLaunchHooks {
         let bridge_runtime = Arc::clone(&self.bridge_runtime);
         self.start_bridge_watchdog_with_reinjector(debug_port, helper_port, move || {
             let bridge_runtime = Arc::clone(&bridge_runtime);
-            async move { bridge_runtime.install(debug_port, helper_port).await }
+            async move { bridge_runtime.install_once(debug_port, helper_port).await }
         })
         .await
     }
@@ -2219,13 +2246,14 @@ enum BridgeWatchdogOutcome {
 async fn check_and_reinject_bridge_with<F, Fut>(
     debug_port: u16,
     helper_port: u16,
+    target: &crate::cdp::CdpTarget,
     reinject: &F,
 ) -> BridgeWatchdogOutcome
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
 {
-    let healthy = match bridge_health_ok(debug_port).await {
+    let healthy = match bridge_health_ok(target).await {
         Ok(healthy) => healthy,
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -2248,6 +2276,15 @@ where
     } else {
         BridgeWatchdogOutcome::ReinjectFailed
     }
+}
+
+fn bridge_watchdog_should_stop(consecutive_misses: &mut u32, target_found: bool) -> bool {
+    if target_found {
+        *consecutive_misses = 0;
+    } else {
+        *consecutive_misses = consecutive_misses.saturating_add(1);
+    }
+    *consecutive_misses >= BRIDGE_WATCHDOG_TARGET_MISS_LIMIT
 }
 
 fn bridge_watchdog_failure_backoff(consecutive_failures: u32) -> std::time::Duration {
@@ -2299,9 +2336,7 @@ where
     }
 }
 
-async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
-    let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+async fn bridge_health_ok(target: &crate::cdp::CdpTarget) -> anyhow::Result<bool> {
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
@@ -3029,6 +3064,17 @@ mod tests {
         assert_eq!(bridge_watchdog_failure_backoff(4).as_secs(), 40);
         assert_eq!(bridge_watchdog_failure_backoff(5).as_secs(), 60);
         assert_eq!(bridge_watchdog_failure_backoff(20).as_secs(), 60);
+    }
+
+    #[test]
+    fn bridge_watchdog_stops_after_three_consecutive_target_misses() {
+        let mut misses = 0;
+
+        assert!(!bridge_watchdog_should_stop(&mut misses, false));
+        assert!(!bridge_watchdog_should_stop(&mut misses, false));
+        assert!(bridge_watchdog_should_stop(&mut misses, false));
+        assert!(!bridge_watchdog_should_stop(&mut misses, true));
+        assert_eq!(misses, 0);
     }
 
     #[test]
