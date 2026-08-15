@@ -505,6 +505,9 @@ fn manager_sessions_route_exposes_search_filter_pagination_and_cleanup_actions()
     assert!(app_tsx.contains("apply_session_index_cleanup"));
     assert!(app_tsx.contains("delete_local_session"));
     assert!(app_tsx.contains("删除已选"));
+    assert!(app_tsx.contains(
+        "return status === \"ok\" || status === \"accepted\" || status === \"local_deleted\";"
+    ));
 }
 
 #[test]

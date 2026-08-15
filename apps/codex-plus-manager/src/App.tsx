@@ -8301,7 +8301,7 @@ function statusClass(status: string) {
 }
 
 function isSuccessStatus(status?: Status) {
-  return status === "ok" || status === "accepted";
+  return status === "ok" || status === "accepted" || status === "local_deleted";
 }
 
 function legacyImportItemCanAutoApply(item: LegacyImportItem) {
