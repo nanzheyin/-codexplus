@@ -242,6 +242,23 @@ fn github_release_workflow_auto_publishes_each_main_push() {
 }
 
 #[test]
+fn github_windows_workflows_retry_and_verify_nsis_installation() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap();
+
+    for workflow in ["release-assets.yml", "pr-build.yml"] {
+        let workflow = std::fs::read_to_string(repo_root.join(".github/workflows").join(workflow))
+            .expect("read Windows workflow");
+        assert!(workflow.contains("$attempt -le 3"));
+        assert!(workflow.contains("NSIS installation failed: $makensis not found"));
+    }
+}
+
+#[test]
 fn release_version_script_validates_every_version_source() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir

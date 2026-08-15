@@ -24,7 +24,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install NSIS
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          for ($attempt = 1; $attempt -le 3 -and -not (Test-Path $makensis); $attempt++) {
+            choco install nsis -y
+            if ($attempt -lt 3 -and -not (Test-Path $makensis)) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          if (-not (Test-Path $makensis)) {
+            throw "NSIS installation failed: $makensis not found"
+          }
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
