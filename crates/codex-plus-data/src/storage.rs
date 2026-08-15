@@ -258,7 +258,11 @@ impl SQLiteStorageAdapter {
         let db = Connection::open(&self.db_path)?;
         match schema_kind(&db)? {
             Some(SchemaKind::CodexThreads) => self.list_codex_threads(&db),
-            Some(SchemaKind::CodexAutomationRuns) => self.list_codex_automation_runs(&db),
+            Some(SchemaKind::CodexAutomationRuns) => {
+                let mut sessions = self.list_codex_automation_runs(&db)?;
+                sessions.extend(self.list_codex_catalog_threads(&db)?);
+                Ok(sessions)
+            }
             _ => anyhow::bail!("Unsupported local storage schema"),
         }
     }
@@ -332,6 +336,50 @@ impl SQLiteStorageAdapter {
                     .map(|status| status.eq_ignore_ascii_case("archived"))
                     .unwrap_or(false),
                 updated_at_ms,
+                rollout_path: String::new(),
+                db_path: self.db_path.to_string_lossy().to_string(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn list_codex_catalog_threads(&self, db: &Connection) -> anyhow::Result<Vec<LocalSession>> {
+        let columns = table_columns(db, "local_thread_catalog")?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if !columns.contains("thread_id") {
+            return Ok(Vec::new());
+        }
+        let title = optional_column_expression(&columns, "display_title", "''");
+        let cwd = optional_column_expression(&columns, "cwd", "''");
+        let model_provider = optional_column_expression(&columns, "model_provider", "''");
+        let updated_at_ms = if columns.contains("source_updated_at") {
+            "CAST(source_updated_at * 1000 AS INTEGER)"
+        } else if columns.contains("source_created_at") {
+            "CAST(source_created_at * 1000 AS INTEGER)"
+        } else {
+            "NULL"
+        };
+        let local_only = if columns.contains("host_id") {
+            "WHERE COALESCE(host_id, 'local') = 'local'"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT thread_id, {title}, {cwd}, {model_provider}, {updated_at_ms}
+             FROM local_thread_catalog
+             {local_only}
+             ORDER BY COALESCE({updated_at_ms}, 0) DESC, thread_id DESC"
+        );
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(LocalSession {
+                id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                cwd: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                model_provider: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                archived: false,
+                updated_at_ms: row.get(4)?,
                 rollout_path: String::new(),
                 db_path: self.db_path.to_string_lossy().to_string(),
             })
@@ -735,6 +783,20 @@ impl SQLiteStorageAdapter {
             "assigned_thread_id = ?1",
             &[&thread_id],
         )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "local_thread_catalog",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "thread_timeline_ledger",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
         let file_backups = rollout_file_backups(tables.get("threads").and_then(Value::as_array));
         if !file_backups.is_empty() {
             tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
@@ -754,6 +816,13 @@ impl SQLiteStorageAdapter {
                 &[&thread_id],
             )?;
             delete_related_rows(&tx, "stage1_outputs", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(
+                &tx,
+                "thread_timeline_ledger",
+                "thread_id = ?1",
+                &[&thread_id],
+            )?;
+            delete_related_rows(&tx, "local_thread_catalog", "thread_id = ?1", &[&thread_id])?;
             if has_table(&tx, "agent_job_items")?
                 && has_columns(&tx, "agent_job_items", &["assigned_thread_id"])?
             {
@@ -820,6 +889,20 @@ impl SQLiteStorageAdapter {
             "thread_id = ?1",
             &[&thread_id],
         )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "local_thread_catalog",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
+        backup_related_rows(
+            db,
+            &mut tables,
+            "thread_timeline_ledger",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
         if tables.values().all(|rows| {
             rows.as_array()
                 .map(|items| items.is_empty())
@@ -838,6 +921,13 @@ impl SQLiteStorageAdapter {
             let tx = db.transaction()?;
             delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
             delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+            delete_related_rows(
+                &tx,
+                "thread_timeline_ledger",
+                "thread_id = ?1",
+                &[&thread_id],
+            )?;
+            delete_related_rows(&tx, "local_thread_catalog", "thread_id = ?1", &[&thread_id])?;
             tx.commit()?;
             Ok(())
         })();
@@ -939,7 +1029,14 @@ fn delete_codex_automation_run_permanently(
 ) -> anyhow::Result<DeleteResult> {
     let thread_id = normalize_codex_thread_id(&session.session_id);
     let exists = related_rows_exist(db, "automation_runs", "thread_id = ?1", &[&thread_id])?
-        || related_rows_exist(db, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+        || related_rows_exist(db, "inbox_items", "thread_id = ?1", &[&thread_id])?
+        || related_rows_exist(db, "local_thread_catalog", "thread_id = ?1", &[&thread_id])?
+        || related_rows_exist(
+            db,
+            "thread_timeline_ledger",
+            "thread_id = ?1",
+            &[&thread_id],
+        )?;
     if !exists {
         return Ok(failed(
             &session.session_id,
@@ -949,6 +1046,13 @@ fn delete_codex_automation_run_permanently(
     let tx = db.transaction()?;
     delete_related_rows(&tx, "automation_runs", "thread_id = ?1", &[&thread_id])?;
     delete_related_rows(&tx, "inbox_items", "thread_id = ?1", &[&thread_id])?;
+    delete_related_rows(
+        &tx,
+        "thread_timeline_ledger",
+        "thread_id = ?1",
+        &[&thread_id],
+    )?;
+    delete_related_rows(&tx, "local_thread_catalog", "thread_id = ?1", &[&thread_id])?;
     tx.commit()?;
     Ok(permanently_deleted(&thread_id))
 }

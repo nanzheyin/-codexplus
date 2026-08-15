@@ -19,6 +19,8 @@ const ACTIVE_WORKSPACE_ROOTS_KEY: &str = "active-workspace-roots";
 const WORKSPACE_PATH_MAP_KEYS: &[&str] = &["electron-workspace-root-labels"];
 
 const THREAD_STATE_MAP_KEYS: &[&str] = &[
+    "electron-remote-hosted-pip-task-visibility-state",
+    "thread-project-assignments",
     "thread-workspace-root-hints",
     "thread-projectless-output-directories",
     "thread-writable-roots",
@@ -726,7 +728,22 @@ fn prune_thread_atom_state(
             if thread_atom_key_matches(&key, thread_ids) {
                 return None;
             }
-            let value = if key == "unread-thread-ids-by-host-v1" {
+            let value = if [
+                "heartbeat-thread-permissions-by-id",
+                "prompt-history",
+                "thread-descriptions-v1",
+            ]
+            .contains(&key.as_str())
+            {
+                match value {
+                    Value::Object(map) => Value::Object(
+                        map.into_iter()
+                            .filter(|(thread_id, _)| !thread_ids.contains(thread_id.trim()))
+                            .collect(),
+                    ),
+                    value => value,
+                }
+            } else if key == "unread-thread-ids-by-host-v1" {
                 prune_thread_ids_from_value(value, thread_ids)
             } else {
                 value
@@ -737,10 +754,15 @@ fn prune_thread_atom_state(
 }
 
 fn thread_atom_key_matches(key: &str, thread_ids: &HashSet<String>) -> bool {
-    ["thread-client-id-v1:", "thread-browser-tabs-v1:"]
-        .iter()
-        .filter_map(|prefix| key.strip_prefix(prefix))
-        .any(|thread_id| thread_ids.contains(thread_id.trim()))
+    [
+        "thread-browser-tabs-v1:",
+        "thread-client-id-v1:",
+        "thread-reference-capability:",
+        "thread-tab-routes-v1:",
+    ]
+    .iter()
+    .filter_map(|prefix| key.strip_prefix(prefix))
+    .any(|thread_id| thread_ids.contains(thread_id.trim()))
 }
 
 fn prune_thread_ids_from_value(value: Value, thread_ids: &HashSet<String>) -> Value {

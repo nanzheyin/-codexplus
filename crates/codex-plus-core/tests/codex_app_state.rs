@@ -265,9 +265,31 @@ fn app_state_thread_prune_removes_selected_thread_references() {
             "thread-writable-roots": {
                 format!("{stale_id}"): ["C:/stale"]
             },
+            "thread-project-assignments": {
+                format!("{stale_id}"): "stale-project",
+                live_id: "live-project"
+            },
+            "electron-remote-hosted-pip-task-visibility-state": {
+                format!("{stale_id}"): true,
+                live_id: true
+            },
             "electron-persisted-atom-state": {
                 format!("thread-client-id-v1:local%3A{stale_id}"): "client",
                 format!("thread-browser-tabs-v1:{stale_id}"): null,
+                format!("thread-reference-capability:{stale_id}"): true,
+                format!("thread-tab-routes-v1:{stale_id}"): {},
+                "heartbeat-thread-permissions-by-id": {
+                    format!("{stale_id}"): true,
+                    live_id: true
+                },
+                "prompt-history": {
+                    format!("{stale_id}"): ["stale"],
+                    live_id: ["live"]
+                },
+                "thread-descriptions-v1": {
+                    format!("{stale_id}"): "stale",
+                    live_id: "live"
+                },
                 "unread-thread-ids-by-host-v1": {
                     "local": [&stale_id, live_id]
                 },
@@ -297,6 +319,13 @@ fn app_state_thread_prune_removes_selected_thread_references() {
             .is_none()
     );
     assert_eq!(state["thread-workspace-root-hints"][live_id], "D:/live");
+    for key in [
+        "thread-project-assignments",
+        "electron-remote-hosted-pip-task-visibility-state",
+    ] {
+        assert!(state[key].get(&stale_id).is_none());
+        assert!(state[key].get(live_id).is_some());
+    }
     assert!(
         state["electron-persisted-atom-state"]
             .get(format!("thread-client-id-v1:local%3A{stale_id}"))
@@ -307,6 +336,32 @@ fn app_state_thread_prune_removes_selected_thread_references() {
             .get(format!("thread-browser-tabs-v1:{stale_id}"))
             .is_none()
     );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-reference-capability:{stale_id}"))
+            .is_none()
+    );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get(format!("thread-tab-routes-v1:{stale_id}"))
+            .is_none()
+    );
+    for key in [
+        "heartbeat-thread-permissions-by-id",
+        "prompt-history",
+        "thread-descriptions-v1",
+    ] {
+        assert!(
+            state["electron-persisted-atom-state"][key]
+                .get(&stale_id)
+                .is_none()
+        );
+        assert!(
+            state["electron-persisted-atom-state"][key]
+                .get(live_id)
+                .is_some()
+        );
+    }
     assert_eq!(
         state["electron-persisted-atom-state"]["unread-thread-ids-by-host-v1"]["local"],
         json!([live_id])

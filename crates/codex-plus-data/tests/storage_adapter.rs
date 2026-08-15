@@ -458,6 +458,7 @@ fn permanent_delete_removes_duplicate_threads_and_sidebar_refs_without_backup() 
     let home = tmp.path().join(".codex");
     let sqlite_dir = home.join("sqlite");
     fs::create_dir_all(&sqlite_dir).unwrap();
+    let catalog_db = sqlite_dir.join("codex-dev.db");
     let first_db = sqlite_dir.join("state_5.sqlite");
     let second_db = home.join("state_5.sqlite");
     let first_rollout = home.join("sessions/first.jsonl");
@@ -467,6 +468,18 @@ fn permanent_delete_removes_duplicate_threads_and_sidebar_refs_without_backup() 
     fs::write(&second_rollout, "{\"type\":\"message\"}\n").unwrap();
     create_codex_thread_db(&first_db, &first_rollout);
     create_codex_thread_db(&second_db, &second_rollout);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    catalog
+        .execute_batch(
+            "CREATE TABLE automation_runs (thread_id TEXT PRIMARY KEY);
+             CREATE TABLE inbox_items (id TEXT PRIMARY KEY, thread_id TEXT);
+             CREATE TABLE local_thread_catalog (host_id TEXT, thread_id TEXT PRIMARY KEY);
+             CREATE TABLE thread_timeline_ledger (host_id TEXT, thread_id TEXT, sequence INTEGER);
+             INSERT INTO local_thread_catalog VALUES ('local', 't1');
+             INSERT INTO thread_timeline_ledger VALUES ('local', 't1', 1);",
+        )
+        .unwrap();
+    drop(catalog);
     fs::write(
         home.join("session_index.jsonl"),
         "{\"id\":\"t1\",\"thread_name\":\"Delete me\",\"updated_at\":\"2026-07-27T00:00:00Z\"}\n{\"id\":\"t2\",\"thread_name\":\"Keep me\",\"updated_at\":\"2026-07-27T00:01:00Z\"}\n",
@@ -474,18 +487,31 @@ fn permanent_delete_removes_duplicate_threads_and_sidebar_refs_without_backup() 
     .unwrap();
 
     let result = delete_local_permanently_from_paths_with_cleanup(
-        vec![first_db.clone(), second_db.clone()],
+        vec![catalog_db.clone(), first_db.clone(), second_db.clone()],
         &session("local:t1", "Delete me"),
         &home,
     );
 
     assert_eq!(result.status, DeleteStatus::LocalDeleted);
-    assert!(result.message.contains("2 个本地存储永久删除"));
+    assert!(result.message.contains("3 个本地存储永久删除"));
     assert!(result.message.contains("列表入口"));
     assert!(result.undo_token.is_none());
     assert!(result.backup_path.is_none());
     assert_eq!(thread_count(&first_db, "t1"), 0);
     assert_eq!(thread_count(&second_db, "t1"), 0);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    for table in ["local_thread_catalog", "thread_timeline_ledger"] {
+        assert_eq!(
+            catalog
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
     assert!(!first_rollout.exists());
     assert!(!second_rollout.exists());
     assert!(!tmp.path().join("backups").exists());
@@ -876,17 +902,33 @@ fn list_local_sessions_reads_codex_automation_runs_schema() {
         [],
     )
     .unwrap();
+    db.execute_batch(
+        "CREATE TABLE local_thread_catalog (
+            host_id TEXT,
+            thread_id TEXT PRIMARY KEY,
+            display_title TEXT,
+            cwd TEXT,
+            model_provider TEXT,
+            source_updated_at REAL
+         );
+         INSERT INTO local_thread_catalog VALUES ('local', 't3', 'Catalog', 'C:/c', 'custom', 0.5);
+         INSERT INTO local_thread_catalog VALUES ('wsl:Ubuntu', 't4', 'Remote', '/home/remote', 'custom', 0.6);",
+    )
+    .unwrap();
     drop(db);
 
     let sessions = adapter.list_local_sessions().unwrap();
 
-    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions.len(), 3);
     assert_eq!(sessions[0].id, "t2");
     assert_eq!(sessions[0].title, "Second");
     assert_eq!(sessions[0].cwd, "C:/b");
     assert!(sessions[0].archived);
     assert_eq!(sessions[0].db_path, db_path.to_string_lossy());
     assert_eq!(sessions[1].id, "t1");
+    assert_eq!(sessions[2].id, "t3");
+    assert_eq!(sessions[2].title, "Catalog");
+    assert_eq!(sessions[2].updated_at_ms, Some(500));
 }
 
 #[test]
