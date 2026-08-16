@@ -264,7 +264,7 @@
   const codexDeleteStyleVersion = "15";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
-  const codexDeleteVersion = "8";
+  const codexDeleteVersion = "9";
   const codexExportVersion = "1";
   const codexProjectMoveVersion = "1";
   const codexActionGroupVersion = "5";
@@ -6892,23 +6892,32 @@
     }
     const hostId = ref.host_id || "local";
     const signal = await codexSignalRequest();
-    await signal.request("send-cli-request-for-host", {
-      hostId,
-      method: "thread/delete",
-      params: { threadId: resolved.session_id },
-    });
     let cleanup;
     try {
-      cleanup = await postJson("/delete/cleanup", { ...ref, session_id: resolved.session_id });
+      await signal.request("send-cli-request-for-host", {
+        hostId,
+        method: "thread/delete",
+        params: { threadId: resolved.session_id },
+      });
     } catch (error) {
-      cleanup = {
-        status: "partial",
-        message: `会话已永久删除，但本地列表残留清理失败：${permanentDeleteErrorMessage(error)}`,
-      };
+      const message = permanentDeleteErrorMessage(error);
+      if (!message.toLowerCase().includes("no rollout found for thread id")) throw error;
+      cleanup = await postJson("/delete", { ...ref, session_id: resolved.session_id });
+      if (cleanup.status !== "local_deleted") throw new Error(cleanup.message || message);
+    }
+    if (!cleanup) {
+      try {
+        cleanup = await postJson("/delete/cleanup", { ...ref, session_id: resolved.session_id });
+      } catch (error) {
+        cleanup = {
+          status: "partial",
+          message: `会话已永久删除，但本地列表残留清理失败：${permanentDeleteErrorMessage(error)}`,
+        };
+      }
     }
     await refreshRecentConversationsForHost(hostId);
     return {
-      status: "server_deleted",
+      status: cleanup.status === "local_deleted" ? "local_deleted" : "server_deleted",
       session_id: resolved.session_id,
       message: cleanup.message || "会话已永久删除",
       cleanup_status: cleanup.status || "ok",

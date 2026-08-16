@@ -600,6 +600,11 @@ fn injection_script_uses_permanent_delete_contract_for_local_and_cloud_threads()
     assert!(script.contains("data-app-action-sidebar-thread-host-id"));
     assert!(script.contains("data-app-action-sidebar-thread-kind"));
     assert!(script.contains("method: \"thread/delete\""));
+    assert!(script.contains("message.toLowerCase().includes(\"no rollout found for thread id\")"));
+    assert!(script.contains(
+        "cleanup = await postJson(\"/delete\", { ...ref, session_id: resolved.session_id });"
+    ));
+    assert!(script.contains("if (cleanup.status !== \"local_deleted\")"));
     assert!(script.contains("client.safeDelete(\"/wham/tasks/{task_id}\""));
     assert!(script.contains("删除后无法恢复，也不能撤销"));
     assert!(script.contains("会话已永久删除，但本地列表残留清理失败"));
